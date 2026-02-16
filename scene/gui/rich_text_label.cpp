@@ -765,6 +765,8 @@ float RichTextLabel::_shape_line(ItemFrame *p_frame, int p_line, const Ref<Font>
 
 void RichTextLabel::_set_table_size(ItemTable *p_table, int p_available_width) {
 	int col_count = p_table->columns.size();
+	int row_count = p_table->subitems.size() / col_count;
+	bool rtl = _find_direction(p_table) == TextServer::Direction::DIRECTION_RTL;
 
 	// Compute available width and total ratio (for expanders).
 	int total_ratio = 0;
@@ -849,6 +851,7 @@ void RichTextLabel::_set_table_size(ItemTable *p_table, int p_available_width) {
 		ItemFrame *frame = static_cast<ItemFrame *>(E->get());
 
 		int column = idx % col_count;
+		int row = idx / col_count;
 
 		offset.x += frame->padding.position.x;
 		float yofs = 0.0;
@@ -860,6 +863,7 @@ void RichTextLabel::_set_table_size(ItemTable *p_table, int p_available_width) {
 			frame->lines[i].text_buf->set_width(p_table->columns[column].width);
 			p_table->columns[column].width = MAX(p_table->columns[column].width, std::ceil(frame->lines[i].text_buf->get_size().x));
 			p_table->columns[column].width_with_padding = MAX(p_table->columns[column].width_with_padding, std::ceil(frame->lines[i].text_buf->get_size().x + frame->padding.position.x + frame->padding.size.x));
+			// p_table->columns[column].width_with_padding = MAX(p_table->columns[column].width_with_padding, p_table->columns[column].width + frame->padding.position.x + frame->padding.size.x);
 
 			frame->lines[i].offset.y = prev_h;
 
@@ -889,7 +893,10 @@ void RichTextLabel::_set_table_size(ItemTable *p_table, int p_available_width) {
 			offset.x = Math::floor(theme_cache.table_h_separation * 0.5);
 			float row_contents_height = row_height;
 			row_height += row_top_padding + row_bottom_padding;
-			row_height += theme_cache.table_v_separation;
+			// Only apply vertical separation between cells
+			if (row < row_count - 1) {
+				row_height += theme_cache.table_v_separation;
+			}
 			p_table->total_height += row_height;
 			offset.y += row_height;
 			p_table->rows.push_back(row_height);
@@ -1102,8 +1109,10 @@ int RichTextLabel::_draw_line(ItemFrame *p_frame, int p_line, const Vector2 &p_o
 								Color odd_row_bg = theme_cache.table_odd_row_bg;
 								Color even_row_bg = theme_cache.table_even_row_bg;
 								Color border = theme_cache.table_border;
-								float h_separation = theme_cache.table_h_separation;
-								float v_separation = theme_cache.table_v_separation;
+								Vector2 sep_offset = Vector2(theme_cache.table_h_separation * 0.5, theme_cache.table_v_separation * 0.5).floor();
+								if (rtl) {
+									sep_offset.x = -sep_offset.x;
+								}
 
 								int col_count = table->columns.size();
 								int row_count = table->rows.size();
@@ -1124,22 +1133,22 @@ int RichTextLabel::_draw_line(ItemFrame *p_frame, int p_line, const Vector2 &p_o
 										if (row % 2 == 0) {
 											Color c = frame->odd_row_bg != Color(0, 0, 0, 0) ? frame->odd_row_bg : odd_row_bg;
 											if (c.a > 0.0) {
-												draw_rect(Rect2(p_ofs + rect.position + off + coff - frame->padding.position - Vector2(h_separation * 0.5, v_separation * 0.5).floor(), Size2(table->columns[col].width + h_separation + frame->padding.position.x + frame->padding.size.x, table->rows_no_padding[row] + frame->padding.position.y + frame->padding.size.y)), c, true);
+												draw_rect(Rect2(p_ofs + rect.position + off + coff - frame->padding.position - sep_offset, Size2(table->columns[col].width + frame->padding.position.x + frame->padding.size.x, table->rows_no_padding[row] + frame->padding.position.y + frame->padding.size.y)), c, true);
 											}
 										} else {
 											Color c = frame->even_row_bg != Color(0, 0, 0, 0) ? frame->even_row_bg : even_row_bg;
 											if (c.a > 0.0) {
-												draw_rect(Rect2(p_ofs + rect.position + off + coff - frame->padding.position - Vector2(h_separation * 0.5, v_separation * 0.5).floor(), Size2(table->columns[col].width + h_separation + frame->padding.position.x + frame->padding.size.x, table->rows_no_padding[row] + frame->padding.position.y + frame->padding.size.y)), c, true);
+												draw_rect(Rect2(p_ofs + rect.position + off + coff - frame->padding.position - sep_offset, Size2(table->columns[col].width + frame->padding.position.x + frame->padding.size.x, table->rows_no_padding[row] + frame->padding.position.y + frame->padding.size.y)), c, true);
 											}
 										}
 										Color bc = frame->border != Color(0, 0, 0, 0) ? frame->border : border;
 										if (bc.a > 0.0) {
-											draw_rect(Rect2(p_ofs + rect.position + off + coff - frame->padding.position - Vector2(h_separation * 0.5, v_separation * 0.5).floor(), Size2(table->columns[col].width + h_separation + frame->padding.position.x + frame->padding.size.x, table->rows_no_padding[row] + frame->padding.position.y + frame->padding.size.y)), bc, false);
+											draw_rect(Rect2(p_ofs + rect.position + off + coff - frame->padding.position - sep_offset, Size2(table->columns[col].width + frame->padding.position.x + frame->padding.size.x, table->rows_no_padding[row] + frame->padding.position.y + frame->padding.size.y)), bc, false);
 										}
 									}
 
 									for (int j = 0; j < (int)frame->lines.size(); j++) {
-										_draw_line(frame, j, p_ofs + rect.position + off + Vector2(0, frame->lines[j].offset.y), rect.size.x, 0, p_base_color, p_outline_size, p_outline_color, p_font_shadow_color, p_shadow_outline_size, p_shadow_ofs, r_processed_glyphs);
+										_draw_line(frame, j, p_ofs + rect.position + off + Vector2(0, frame->lines[j].offset.y) - sep_offset, rect.size.x, 0, p_base_color, p_outline_size, p_outline_color, p_font_shadow_color, p_shadow_outline_size, p_shadow_ofs, r_processed_glyphs);
 									}
 									idx++;
 								}
