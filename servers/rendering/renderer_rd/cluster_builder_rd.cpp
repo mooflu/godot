@@ -59,6 +59,8 @@ ClusterBuilderSharedDataRD::ClusterBuilderSharedDataRD() {
 		variants.push_back("");
 		variants.push_back("\n#define USE_ATTACHMENT\n");
 
+		// TODO: Check SHADER_NORMAL_NO_ATOMICS is picked for webgpu
+
 		ClusterRender::ShaderVariant shader_variant;
 		RenderingDevice *rd = RD::get_singleton();
 		if (rd->has_feature(RD::SUPPORTS_FRAGMENT_SHADER_WITH_ONLY_SIDE_EFFECTS)) {

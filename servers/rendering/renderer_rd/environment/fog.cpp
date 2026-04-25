@@ -927,14 +927,15 @@ void Fog::volumetric_fog_update(const VolumetricFogSettings &p_settings, const P
 		}
 
 		{
-			RD::Uniform u;
-			u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
-			u.binding = 13;
+			// was u.binding = 13; // RENDER_DRIVER_WEBGPU: doesn't support arrays
 			for (int i = 0; i < RendererRD::GI::MAX_VOXEL_GI_INSTANCES; i++) {
+				RD::Uniform u;
+				u.binding = 300 + i;
+				u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
 				u.append_id(p_settings.rbgi->voxel_gi_textures[i]);
+				uniforms.push_back(u);
+				copy_uniforms.push_back(u);
 			}
-			uniforms.push_back(u);
-			copy_uniforms.push_back(u);
 		}
 		{
 			RD::Uniform u;

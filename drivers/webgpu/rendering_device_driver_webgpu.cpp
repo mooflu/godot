@@ -1,0 +1,4070 @@
+#include "rendering_device_driver_webgpu.h"
+
+#include "core/error/error_macros.h"
+#include "core/os/memory.h"
+#include "core/string/print_string.h"
+#include "core/templates/local_vector.h"
+
+#include "servers/rendering/rendering_shader_container.h"
+
+#include "rendering_context_driver_webgpu.h"
+#include "webgpu/webgpu.h"
+#include "webgpu_conv.h"
+
+#define WEBGPU_DAWN
+#ifdef WEBGPU_DAWN
+// only used to dump enum value as strings
+#include "dawn/webgpu_cpp.h"
+#include "dawn/webgpu_cpp_print.h"
+#endif // WEBGPU_DAWN
+
+#include <cstdint>
+#include <cstring>
+#include <unordered_set>
+
+/// Godot limits the number of dynamic buffers to 8.
+///
+/// This is a minimum guarantee for Vulkan.
+constexpr uint32_t MAX_DYNAMIC_BUFFERS = 8;
+
+static void dumpLimits(const String &type, const WGPULimits &limits) {
+	print_verbose("RenderingDeviceDriverWebGpu WGPULimits for: " + type);
+
+    print_verbose("maxTextureDimension1D:" + itos(limits.maxTextureDimension1D));
+    print_verbose("maxTextureDimension2D:" + itos(limits.maxTextureDimension2D));
+    print_verbose("maxTextureDimension3D:" + itos(limits.maxTextureDimension3D));
+    print_verbose("maxTextureArrayLayers:" + itos(limits.maxTextureArrayLayers));
+    print_verbose("maxBindGroups:" + itos(limits.maxBindGroups));
+    print_verbose("maxBindGroupsPlusVertexBuffers:" + itos(limits.maxBindGroupsPlusVertexBuffers));
+    print_verbose("maxBindingsPerBindGroup:" + itos(limits.maxBindingsPerBindGroup));
+    print_verbose("maxDynamicUniformBuffersPerPipelineLayout:" + itos(limits.maxDynamicUniformBuffersPerPipelineLayout));
+    print_verbose("maxDynamicStorageBuffersPerPipelineLayout:" + itos(limits.maxDynamicStorageBuffersPerPipelineLayout));
+    print_verbose("maxSampledTexturesPerShaderStage:" + itos(limits.maxSampledTexturesPerShaderStage));
+    print_verbose("maxSamplersPerShaderStage:" + itos(limits.maxSamplersPerShaderStage));
+    print_verbose("maxStorageBuffersPerShaderStage:" + itos(limits.maxStorageBuffersPerShaderStage));
+    print_verbose("maxStorageTexturesPerShaderStage:" + itos(limits.maxStorageTexturesPerShaderStage));
+    print_verbose("maxUniformBuffersPerShaderStage:" + itos(limits.maxUniformBuffersPerShaderStage));
+    print_verbose("maxUniformBufferBindingSize:" + itos(limits.maxUniformBufferBindingSize));
+    print_verbose("maxStorageBufferBindingSize:" + itos(limits.maxStorageBufferBindingSize));
+    print_verbose("minUniformBufferOffsetAlignment:" + itos(limits.minUniformBufferOffsetAlignment));
+    print_verbose("minStorageBufferOffsetAlignment:" + itos(limits.minStorageBufferOffsetAlignment));
+    print_verbose("maxVertexBuffers:" + itos(limits.maxVertexBuffers));
+    print_verbose("maxBufferSize:" + itos(limits.maxBufferSize));
+    print_verbose("maxVertexAttributes:" + itos(limits.maxVertexAttributes));
+    print_verbose("maxVertexBufferArrayStride:" + itos(limits.maxVertexBufferArrayStride));
+    print_verbose("maxInterStageShaderVariables:" + itos(limits.maxInterStageShaderVariables));
+    print_verbose("maxColorAttachments:" + itos(limits.maxColorAttachments));
+    print_verbose("maxColorAttachmentBytesPerSample:" + itos(limits.maxColorAttachmentBytesPerSample));
+    print_verbose("maxComputeWorkgroupStorageSize:" + itos(limits.maxComputeWorkgroupStorageSize));
+    print_verbose("maxComputeInvocationsPerWorkgroup:" + itos(limits.maxComputeInvocationsPerWorkgroup));
+    print_verbose("maxComputeWorkgroupSizeX:" + itos(limits.maxComputeWorkgroupSizeX));
+    print_verbose("maxComputeWorkgroupSizeY:" + itos(limits.maxComputeWorkgroupSizeY));
+    print_verbose("maxComputeWorkgroupSizeZ:" + itos(limits.maxComputeWorkgroupSizeZ));
+    print_verbose("maxComputeWorkgroupsPerDimension:" + itos(limits.maxComputeWorkgroupsPerDimension));
+    print_verbose("maxImmediateSize:" + itos(limits.maxImmediateSize));
+}
+
+static void dumpFeatures(const String &type, const WGPUSupportedFeatures &features) {
+#ifdef WEBGPU_DAWN
+	print_verbose("RenderingDeviceDriverWebGpu WGPUSupportedFeatures for: " + type);
+	for (size_t i=0; i<features.featureCount; i++) {
+		wgpu::FeatureName fn = (wgpu::FeatureName)(features.features[i]);
+		std::stringstream ss;
+		ss << fn;
+		print_verbose(ss.str().c_str());
+	}
+#endif // WEBGPU_DAWN
+}
+
+static void dumpWGSLFeatures(const WGPUSupportedWGSLLanguageFeatures &features) {
+#ifdef WEBGPU_DAWN
+	print_verbose("RenderingDeviceDriverWebGpu WGPUSupportedWGSLLanguageFeatures:");
+	for (size_t i=0; i<features.featureCount; i++) {
+		wgpu::WGSLLanguageFeatureName fn = (wgpu::WGSLLanguageFeatureName)(features.features[i]);
+		std::stringstream ss;
+		ss << fn;
+		print_verbose(ss.str().c_str());
+	}
+#endif // WEBGPU_DAWN
+}
+
+void RenderingDeviceDriverWebGpu::handle_request_device(WGPURequestDeviceStatus p_status,
+		WGPUDevice p_device, WGPUStringView p_message,
+		void *userdata, void *_) {
+
+	print_verbose("handle_request_device");
+
+	if (p_status != WGPURequestDeviceStatus_Success) {
+		print_line("[WGPU]", String::utf8(p_message.data, p_message.length));
+	}
+	*(WGPUDevice *)userdata = p_device;
+}
+
+void RenderingDeviceDriverWebGpu::device_lost_callback(WGPUDevice const * device, WGPUDeviceLostReason reason, WGPUStringView message,
+	WGPU_NULLABLE void* userdata1, WGPU_NULLABLE void* userdata2) {
+	ERR_PRINT("webgpu device lost: " + String::utf8(message.data, message.length));
+}
+
+void RenderingDeviceDriverWebGpu::uncaptured_error_callback(WGPUDevice const * device, WGPUErrorType type, WGPUStringView message,
+	WGPU_NULLABLE void* userdata1, WGPU_NULLABLE void* userdata2) {
+	ERR_PRINT("webgpu error: " + String::utf8(message.data, message.length));
+}
+
+Error RenderingDeviceDriverWebGpu::initialize(uint32_t p_device_index, uint32_t p_frame_count) {
+	print_verbose("RenderingDeviceDriverWebGpu::initialize");
+
+	adapter = context_driver->adapter_get(p_device_index);
+	context_device = context_driver->device_get(p_device_index);
+
+	WGPUSupportedWGSLLanguageFeatures wgsl_features;
+	wgpuInstanceGetWGSLLanguageFeatures(context_driver->instance_get(), &wgsl_features);
+	dumpWGSLFeatures(wgsl_features);
+
+	WGPUSupportedFeatures features{};
+	wgpuAdapterGetFeatures(adapter, &features);
+	// dumpFeatures("adapter", features);
+
+	WGPULimits limits{};
+	wgpuAdapterGetLimits(adapter, &limits);
+	// we ask for the adapter limits below, so no need to dump here really...
+	// dumpLimits("adapter", limits);
+
+	// Note: can't request all the features returned from wgpuAdapterGetFeatures as some are mutual exclusive
+	std::unordered_set<WGPUFeatureName> wanted_features_set{
+		WGPUFeatureName_Depth32FloatStencil8,
+		WGPUFeatureName_Float32Filterable,
+		WGPUFeatureName_TextureCompressionBC,
+		WGPUFeatureName_TextureComponentSwizzle,
+		WGPUFeatureName_TextureFormatsTier1, // https://www.w3.org/TR/webgpu/#texture-formats-tier1
+		WGPUFeatureName_TextureFormatsTier2, // https://www.w3.org/TR/webgpu/#texture-formats-tier2
+		WGPUFeatureName_Unorm16TextureFormats,
+		WGPUFeatureName_Subgroups,
+		WGPUFeatureName_ShaderF16, // SUPPORTS_HALF_FLOAT
+	};
+#if 0 // values returned from Dawn native
+		* FeatureName::CoreFeaturesAndLimits always
+		FeatureName::DepthClipControl
+		* FeatureName::Depth32FloatStencil8
+		* FeatureName::TextureCompressionBC
+		FeatureName::TextureCompressionBCSliced3D
+		FeatureName::TimestampQuery
+		FeatureName::IndirectFirstInstance
+		* FeatureName::RG11B10UfloatRenderable via tier1
+		FeatureName::BGRA8UnormStorage
+		* FeatureName::Float32Filterable
+		FeatureName::Float32Blendable
+		FeatureName::ClipDistances
+		FeatureName::DualSourceBlending
+		* FeatureName::Subgroups
+		* FeatureName::TextureFormatsTier1
+		* FeatureName::TextureFormatsTier2
+		FeatureName::PrimitiveIndex
+		* FeatureName::TextureComponentSwizzle
+		FeatureName::DawnInternalUsages
+		FeatureName::DawnMultiPlanarFormats
+		FeatureName::DawnNative
+		FeatureName::ImplicitDeviceSynchronization
+		FeatureName::TransientAttachments
+		* FeatureName::Unorm16TextureFormats
+		FeatureName::AdapterPropertiesMemoryHeaps
+		FeatureName::AdapterPropertiesVk
+		FeatureName::DawnFormatCapabilities
+		FeatureName::DawnDrmFormatCapabilities
+		FeatureName::SharedTextureMemoryDmaBuf
+		FeatureName::SharedTextureMemoryOpaqueFD
+		FeatureName::SharedFenceVkSemaphoreOpaqueFD
+		FeatureName::SharedFenceSyncFD
+		FeatureName::DawnLoadResolveTexture
+		FeatureName::FlexibleTextureViews
+		FeatureName::Unorm16FormatsForExternalTexture
+#endif
+
+	Vector<WGPUFeatureName> required_features;
+	for (size_t i=0; i<features.featureCount; i++) {
+		WGPUFeatureName f = features.features[i];
+		if (wanted_features_set.find(f) != wanted_features_set.end()) {
+			required_features.push_back(f);
+		}
+	}
+
+	WGPUDeviceLostCallbackInfo device_lost_cb_info{
+		.nextInChain = nullptr,
+		.mode = WGPUCallbackMode_WaitAnyOnly,
+		.callback = device_lost_callback,
+	};
+
+	WGPUUncapturedErrorCallbackInfo uncaptured_error_cb_info{
+		.nextInChain = nullptr,
+		.callback = uncaptured_error_callback,
+	};
+
+	WGPUDeviceDescriptor device_desc = (WGPUDeviceDescriptor){
+		.requiredFeatureCount = (size_t)required_features.size(),
+		.requiredFeatures = required_features.ptr(),
+		.requiredLimits = &limits,
+		.deviceLostCallbackInfo = device_lost_cb_info,
+		.uncapturedErrorCallbackInfo = uncaptured_error_cb_info,
+	};
+
+	WGPURequestDeviceCallbackInfo device_callback_info{
+		.nextInChain = nullptr,
+		.mode = WGPUCallbackMode_WaitAnyOnly,
+		.callback = handle_request_device,
+		.userdata1 = &this->device,
+	};
+	WGPUFuture f1 = wgpuAdapterRequestDevice(adapter, &device_desc, device_callback_info);
+
+	WGPUFutureWaitInfo waitInfo{
+		.future = f1,
+		.completed = false,
+	};
+	wgpuInstanceWaitAny(context_driver->instance_get(), 1, &waitInfo, UINT64_MAX);
+
+	ERR_FAIL_COND_V(!this->device, FAILED);
+
+#define WEBGPU_LOGGING
+#ifdef WEBGPU_LOGGING
+	// Not getting any log output here...? Only getting output from uncaptured_error_callback above
+	WGPULoggingCallbackInfo loggingCBInfo{
+		.nextInChain = nullptr,
+		.callback = [](WGPULoggingType type, WGPUStringView message, WGPU_NULLABLE void* userdata1, WGPU_NULLABLE void* userdata2) {
+			String msg = String("--------- WEBGPU: ") + String::utf8(message.data, message.length);
+			switch (type) {
+				default:
+				case WGPULoggingType_Verbose:
+				case WGPULoggingType_Info:
+					COLOR_PRINT("green", msg);
+					break;
+
+				case WGPULoggingType_Warning:
+					WARN_PRINT(msg);
+					break;
+
+				case WGPULoggingType_Error:
+					ERR_PRINT(msg);
+					break;
+			}
+		},
+		.userdata1 = nullptr,
+		.userdata2 = nullptr,
+	};
+	wgpuDeviceSetLoggingCallback(device, loggingCBInfo);
+#endif // WEBGPU_LOGGING
+
+#if 0
+	WGPUPopErrorScopeCallbackInfo cbInfo = {
+		.nextInChain = nullptr,
+		.mode = WGPUCallbackMode_WaitAnyOnly,
+		.callback = [](WGPUPopErrorScopeStatus status, WGPUErrorType type, WGPUStringView message, WGPU_NULLABLE void* userdata1, WGPU_NULLABLE void* userdata2) {
+			WARN_PRINT("error_scope_handler: " + String::utf8(message.data, message.length) + " type: " + itos(type) +  " status: " + itos(status));
+		},
+	};
+	WGPUFuture f1 = wgpuDevicePopErrorScope(device, cbInfo);
+	WGPUFutureWaitInfo waitInfo{
+		.future = f1,
+		.completed = false,
+	};
+	wgpuInstanceWaitAny(context_driver->instance_get(), 1, &waitInfo, UINT64_MAX);
+#endif
+
+	WGPULimits devLimits{};
+	wgpuDeviceGetLimits(this->device, &devLimits);
+	dumpLimits("device", devLimits);
+
+	WGPUSupportedFeatures devFeatures{};
+	wgpuDeviceGetFeatures(this->device, &devFeatures);
+	dumpFeatures("device", devFeatures);
+
+	queue = wgpuDeviceGetQueue(device);
+	ERR_FAIL_COND_V(!this->queue, FAILED);
+
+	capabilities = (Capabilities){
+		.device_family = DEVICE_WEBGPU,
+		.version_major = 20260317,
+		.version_minor = 0,
+	};
+	multiview_capabilities = (MultiviewCapabilities){
+		.is_supported = false,
+	};
+	fdm_capabilities = (FragmentDensityMapCapabilities){
+		.attachment_supported = false,
+		.dynamic_attachment_supported = false,
+		.non_subsampled_images_supported = false,
+		.invocations_supported = false,
+		.offset_supported = false,
+	};
+	fsr_capabilities = (FragmentShadingRateCapabilities){
+		.pipeline_supported = false,
+		.primitive_supported = false,
+		.attachment_supported = false,
+	};
+
+	// Set the pipeline cache ID based on the version.
+	pipeline_cache_id = "webgpu-driver-" + get_api_version();
+
+	frame_count = p_frame_count;
+
+	return OK;
+}
+
+/*****************/
+/**** BUFFERS ****/
+/*****************/
+
+void RenderingDeviceDriverWebGpu::handle_buffer_map(WGPUMapAsyncStatus p_status, WGPUStringView p_message, void *p_userdata1, void *_userdata2) {
+	ERR_FAIL_COND_V_MSG(
+			p_status != WGPUMapAsyncStatus_Success, (void)0,
+			vformat("Failed to map buffer: " + String::utf8(p_message.data, p_message.length)));
+
+	BufferInfo *buffer_info = (BufferInfo *)p_userdata1;
+	buffer_info->is_mapped = true;
+}
+
+RenderingDeviceDriverWebGpu::BufferID RenderingDeviceDriverWebGpu::buffer_create(uint64_t p_size, BitField<BufferUsageBits> p_usage, MemoryAllocationType p_allocation_type, uint64_t p_frames_drawn) {
+	WGPUBufferUsage usage = webgpu_buffer_usage_from_rd(p_usage);
+
+	uint32_t map_mode = 0;
+	bool mapped_at_creation = false;
+
+	p_size = STEPIFY(p_size, 256); // size should be multiple of 4, offset in wgpuBufferMapAsync multiple of 8;
+	const size_t original_size = p_size;
+
+	bool is_src = p_usage.has_flag(BUFFER_USAGE_TRANSFER_FROM_BIT);
+	bool is_dst = p_usage.has_flag(BUFFER_USAGE_TRANSFER_TO_BIT);
+	String buffer_name = p_allocation_type == MEMORY_ALLOCATION_TYPE_CPU ? "CPU" : "GPU";
+	buffer_name += buffer_usage_bit_to_string(p_usage);
+
+	if (is_src && !is_dst) {
+		// Looks like a staging buffer: CPU maps, writes sequentially, then GPU copies to VRAM.
+		buffer_name += " staging";
+	}
+	else if (is_dst && !is_src) {
+		// Looks like a readback buffer: GPU copies from VRAM, then CPU maps and reads.
+		buffer_name += " readback";
+	}
+	buffer_name += " buffer";
+	print_verbose("RenderingDeviceDriverWebGpu::buffer_create '" + buffer_name + "' usage:" + itos(p_usage) + " size:" + itos(p_size));
+
+	switch (p_allocation_type) {
+		case MEMORY_ALLOCATION_TYPE_CPU: {
+			if (usage & WGPUBufferUsage_MapRead) {
+				map_mode |= WGPUMapMode_Read;
+			}
+			if (usage & WGPUBufferUsage_MapWrite) {
+				map_mode |= WGPUMapMode_Write;
+				mapped_at_creation = true; // mappedAtCreation is mode WRITE and range [0, descriptor.size]
+			}
+		} break;
+		case MEMORY_ALLOCATION_TYPE_GPU: {
+			usage = usage & ~(WGPUBufferUsage_MapRead | WGPUBufferUsage_MapWrite);
+		} break;
+	}
+
+	// Note: Persistent buffers are meant for frequent CPU -> GPU transfers
+	// See Unified Memory Architecture notes in servers/rendering/multi_uma_buffer.h
+	if (p_usage.has_flag(BUFFER_USAGE_DYNAMIC_PERSISTENT_BIT)) {
+		p_size = p_size * frame_count;
+		// will do a writeBuffer so need copydst
+		usage = (usage & ~WGPUBufferUsage_CopySrc) | WGPUBufferUsage_CopyDst;
+	}
+
+	if ((map_mode & WGPUMapMode_Read) && (map_mode & WGPUMapMode_Write)) {
+		// TODO: create a read and a write buffer + a cpu shadow buffer?
+		ERR_PRINT("Both WGPUMapMode_Read and WGPUMapMode_Write not allowed");
+	}
+
+	Vector<uint8_t> b_name = buffer_name.to_ascii_buffer();
+	WGPUBufferDescriptor desc = (WGPUBufferDescriptor){
+		.label = WGPUStringView{.data = (char *)b_name.ptr(), .length = (size_t)b_name.size()},
+		.usage = usage,
+		.size = p_size,
+		.mappedAtCreation = mapped_at_creation,
+	};
+
+	WGPUBuffer buffer = wgpuDeviceCreateBuffer(device, &desc);
+	if (!buffer) {
+		ERR_PRINT("Failed to create buffer!");
+	}
+
+	BufferInfo *buffer_info = VersatileResource::allocate<BufferInfo>(resources_allocator);
+	buffer_info->size = original_size;
+	buffer_info->buffer = buffer;
+	buffer_info->map_mode = (WGPUMapMode)map_mode;
+	buffer_info->is_mapped = mapped_at_creation;
+	buffer_info->flags.is_dynamic = p_usage.has_flag(BUFFER_USAGE_DYNAMIC_PERSISTENT_BIT);
+	buffer_info->frame_idx = 0;
+	buffer_info->usage = p_usage;
+	buffer_info->alloc_type = p_allocation_type;
+
+	if (p_usage.has_flag(BUFFER_USAGE_DYNAMIC_PERSISTENT_BIT)) {
+		buffer_info->persistent_ptr = (uint8_t *)memalloc(p_size);
+	} else {
+		buffer_info->persistent_ptr = nullptr;
+	}
+
+	return BufferID(buffer_info);
+}
+
+bool RenderingDeviceDriverWebGpu::buffer_set_texel_format(BufferID p_buffer, DataFormat p_format) {
+	BufferInfo *buffer_info = (BufferInfo *)p_buffer.id;
+	buffer_info->texel_format = p_format;
+	return true;
+}
+
+void RenderingDeviceDriverWebGpu::buffer_free(BufferID p_buffer) {
+	BufferInfo *buffer_info = (BufferInfo *)p_buffer.id;
+	if (buffer_info->persistent_ptr) {
+		memfree(buffer_info->persistent_ptr);
+		buffer_info->persistent_ptr = nullptr;
+	}
+	wgpuBufferRelease(buffer_info->buffer);
+	VersatileResource::free(resources_allocator, buffer_info);
+}
+
+uint64_t RenderingDeviceDriverWebGpu::buffer_get_allocation_size(BufferID p_buffer) {
+	BufferInfo *buffer_info = (BufferInfo *)p_buffer.id;
+	return buffer_info->size;
+}
+
+uint8_t *RenderingDeviceDriverWebGpu::buffer_map(BufferID p_buffer) {
+	BufferInfo *buffer_info = (BufferInfo *)p_buffer.id;
+	if (buffer_info->usage > 2 || buffer_info->alloc_type == MEMORY_ALLOCATION_TYPE_GPU) {
+		ERR_PRINT("RenderingDeviceDriverWebGpu::buffer_map usage: " + itos(buffer_info->usage));
+		ERR_PRINT("RenderingDeviceDriverWebGpu::buffer_map alloc type: " + itos(buffer_info->alloc_type));
+	}
+
+	uint64_t offset = 0;
+	uint64_t size = buffer_info->size;
+
+	if (!buffer_info->is_mapped) {
+		WGPUBufferMapCallbackInfo buffer_map_callback_info = (WGPUBufferMapCallbackInfo){
+			.mode = WGPUCallbackMode_WaitAnyOnly,
+			.callback = handle_buffer_map,
+			.userdata1 = buffer_info,
+		};
+		WGPUFuture f1 = wgpuBufferMapAsync(
+				buffer_info->buffer, buffer_info->map_mode, offset, size, buffer_map_callback_info);
+
+		WGPUFutureWaitInfo waitInfo{
+			.future = f1,
+			.completed = false,
+		};
+		wgpuInstanceWaitAny(context_driver->instance_get(), 1, &waitInfo, UINT64_MAX);
+	}
+
+	if (buffer_info->usage.has_flag(BUFFER_USAGE_TRANSFER_TO_BIT)) {
+		// readback i.e. const
+		return (uint8_t *)wgpuBufferGetConstMappedRange(buffer_info->buffer, offset, size);
+	}
+	// staging i.e. non-const for writes
+	return (uint8_t *)wgpuBufferGetMappedRange(buffer_info->buffer, offset, size);
+}
+
+void RenderingDeviceDriverWebGpu::buffer_unmap(BufferID p_buffer) {
+	BufferInfo *buffer_info = (BufferInfo *)p_buffer.id;
+	buffer_info->is_mapped = false;
+
+	wgpuBufferUnmap(buffer_info->buffer); // unmap to release for GPU access
+}
+
+uint8_t *RenderingDeviceDriverWebGpu::buffer_persistent_map_advance(BufferID p_buffer, uint64_t p_frames_drawn) {
+	BufferInfo *buffer_info = (BufferInfo *)p_buffer.id;
+	ERR_FAIL_COND_V_MSG(!buffer_info->is_dynamic(), nullptr, "Buffer must have BUFFER_USAGE_DYNAMIC_PERSISTENT_BIT. Use buffer_map() instead.");
+
+	buffer_info->frame_idx = (buffer_info->frame_idx + 1u) % frame_count;
+	return buffer_info->persistent_ptr + buffer_info->frame_idx * buffer_info->size;
+}
+
+void RenderingDeviceDriverWebGpu::buffer_flush(BufferID p_buffer) {
+	BufferInfo *buffer_info = (BufferInfo *)p_buffer.id;
+	ERR_FAIL_COND_MSG(!buffer_info->is_dynamic(), "Buffer must have BUFFER_USAGE_DYNAMIC_PERSISTENT_BIT. Use buffer_map() instead.");
+
+	uint32_t offset = buffer_info->frame_idx * buffer_info->size;
+	wgpuQueueWriteBuffer(queue, buffer_info->buffer, offset, buffer_info->persistent_ptr, buffer_info->size);
+}
+
+
+uint64_t RenderingDeviceDriverWebGpu::buffer_get_dynamic_offsets(Span<BufferID> p_buffers) {
+	uint64_t mask = 0u;
+	uint64_t shift = 0u;
+
+	for (const BufferID &buf : p_buffers) {
+		const BufferInfo *buffer_info = (const BufferInfo *)buf.id;
+		if (!buffer_info->is_dynamic()) {
+			continue;
+		}
+		mask |= buffer_info->frame_idx << shift;
+		// We can encode the frame index in 2 bits since frame_count won't be > 4.
+		shift += 2UL;
+	}
+
+	return mask;
+}
+
+uint64_t RenderingDeviceDriverWebGpu::buffer_get_device_address(BufferID p_buffer) {
+	WARN_PRINT_ONCE("buffer_get_device_address is not supported on webgpu.");
+	return 0;
+}
+
+/*****************/
+/**** TEXTURE ****/
+/*****************/
+
+RenderingDeviceDriver::TextureID RenderingDeviceDriverWebGpu::texture_create(const TextureFormat &p_format, const TextureView &p_view) {
+	WGPUFlags usage_bits = WGPUTextureUsage_None;
+	if (p_format.usage_bits & TEXTURE_USAGE_SAMPLING_BIT) {
+		usage_bits |= WGPUTextureUsage_TextureBinding;
+	}
+	if ((p_format.usage_bits & TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) ||
+			(p_format.usage_bits & TEXTURE_USAGE_COLOR_ATTACHMENT_BIT) ||
+			(p_format.usage_bits & TEXTURE_USAGE_INPUT_ATTACHMENT_BIT)) {
+		usage_bits |= WGPUTextureUsage_RenderAttachment;
+	}
+	if ((p_format.usage_bits & TEXTURE_USAGE_CAN_UPDATE_BIT) || (p_format.usage_bits & TEXTURE_USAGE_CAN_COPY_TO_BIT)) {
+		usage_bits |= WGPUTextureUsage_CopyDst;
+	}
+	if (p_format.usage_bits & TEXTURE_USAGE_CAN_COPY_FROM_BIT) {
+		usage_bits |= WGPUTextureUsage_CopySrc;
+	}
+	if (p_format.usage_bits & TEXTURE_USAGE_STORAGE_BIT) {
+		usage_bits |= WGPUTextureUsage_StorageBinding;
+	}
+	WGPUTextureFormat texture_format = webgpu_texture_format_from_rd(p_format.format);
+	WGPUTextureFormat view_format = webgpu_texture_format_from_rd(p_view.format, true);
+	WGPUTextureUsage usage = (WGPUTextureUsage)usage_bits;
+	WGPUTextureAspect aspect = webgpu_texture_aspect_from_rd_format(p_format.format);
+
+	if (webgpu_texture_format_is_depth_stencil(texture_format)) {
+		aspect = WGPUTextureAspect_DepthOnly;
+	}
+
+	WGPUExtent3D size;
+	size.width = p_format.width;
+	size.height = p_format.height;
+	size.depthOrArrayLayers = p_format.array_layers;
+	WGPUTextureDimension dimension;
+	bool uses_depth_or_array_layers = false;
+
+	if (p_format.texture_type == TEXTURE_TYPE_1D) {
+		dimension = WGPUTextureDimension_1D;
+	} else if (p_format.texture_type == TEXTURE_TYPE_2D) {
+		size.depthOrArrayLayers = p_format.array_layers;
+		dimension = WGPUTextureDimension_2D;
+	} else if (p_format.texture_type == TEXTURE_TYPE_3D) {
+		size.depthOrArrayLayers = p_format.depth;
+		uses_depth_or_array_layers = true;
+		dimension = WGPUTextureDimension_3D;
+	} else if (p_format.texture_type == TEXTURE_TYPE_1D_ARRAY) {
+		size.depthOrArrayLayers = p_format.array_layers;
+		dimension = WGPUTextureDimension_1D;
+	} else if (p_format.texture_type == TEXTURE_TYPE_2D_ARRAY) {
+		size.depthOrArrayLayers = p_format.array_layers;
+		dimension = WGPUTextureDimension_2D;
+	} else if (p_format.texture_type == TEXTURE_TYPE_CUBE) {
+		size.depthOrArrayLayers = p_format.array_layers;
+		dimension = WGPUTextureDimension_2D;
+	} else if (p_format.texture_type == TEXTURE_TYPE_CUBE_ARRAY) {
+		size.depthOrArrayLayers = p_format.array_layers;
+		dimension = WGPUTextureDimension_2D;
+	}
+
+	if (p_format.samples > TextureSamples::TEXTURE_SAMPLES_1) {
+		usage_bits |= WGPUTextureUsage_RenderAttachment;
+	}
+
+	uint32_t mip_level_count = p_format.mipmaps ? p_format.mipmaps : 1;
+
+	// TODO: Assert that p_format.samples follows this behavior.
+	uint32_t sample_count = pow(2, (uint32_t)p_format.samples);
+
+	Vector<WGPUTextureFormat> view_formats;
+
+	for (uint32_t i = 0; i < p_format.shareable_formats.size(); i++) {
+		DataFormat format = p_format.shareable_formats[i];
+		view_formats.push_back(webgpu_texture_format_from_rd(format, true));
+	}
+
+	String tex_str = "texture format: " + itos(texture_format) + " dim: " + itos(dimension);
+	Vector<uint8_t> texname = tex_str.to_ascii_buffer();
+
+	WGPUTextureDescriptor texture_desc = (WGPUTextureDescriptor){
+		.nextInChain = nullptr,
+		.label = WGPUStringView{.data = (char *)texname.ptr(), .length = (size_t)texname.size()},
+		.usage = usage,
+		.dimension = dimension,
+		.size = size,
+		.format = texture_format,
+		.mipLevelCount = mip_level_count,
+		.sampleCount = sample_count,
+		.viewFormatCount = (size_t)view_formats.size(),
+		.viewFormats = view_formats.ptr(),
+	};
+
+	WGPUTexture texture = wgpuDeviceCreateTexture(device, &texture_desc);
+
+	WGPUTextureComponentSwizzleDescriptor texture_view_desc_extras = (WGPUTextureComponentSwizzleDescriptor){
+		.chain = (WGPUChainedStruct){
+				.next = nullptr,
+				.sType = (WGPUSType)WGPUSType_TextureComponentSwizzleDescriptor,
+		},
+		.swizzle = (WGPUTextureComponentSwizzle){
+				.r = webgpu_component_swizzle_from_rd(p_view.swizzle_r),
+				.g = webgpu_component_swizzle_from_rd(p_view.swizzle_g),
+				.b = webgpu_component_swizzle_from_rd(p_view.swizzle_b),
+				.a = webgpu_component_swizzle_from_rd(p_view.swizzle_a),
+		},
+	};
+
+	WGPUTextureViewDimension view_dimension = webgpu_texture_view_dimension_from_rd(p_format.texture_type);
+
+	// NOTE: `imageCube` => `image2DArray` after shader transforms.
+	if (view_dimension == WGPUTextureViewDimension_Cube && (p_format.usage_bits & TEXTURE_USAGE_STORAGE_BIT)) {
+		CRASH_NOW_MSG("TODO --> after shader transforms. needed?");
+		view_dimension = WGPUTextureViewDimension_2DArray;
+	}
+
+	String t_str = "textureview format: " + itos(view_format) +
+		" dim: " + itos(view_dimension) +
+		" tex type: " + itos(p_format.texture_type) +
+		" usage: " + itos(p_format.usage_bits);
+	Vector<uint8_t> t_name = t_str.to_ascii_buffer();
+
+	WGPUTextureViewDescriptor texture_view_desc = (WGPUTextureViewDescriptor){
+		.nextInChain = (WGPUChainedStruct *)&texture_view_desc_extras,
+		.label = WGPUStringView{.data = (char *)t_name.ptr(), .length = (size_t)t_name.size()},
+		.format = view_format,
+		.dimension = view_dimension,
+		.mipLevelCount = texture_desc.mipLevelCount,
+		.arrayLayerCount = uses_depth_or_array_layers ? 1 : texture_desc.size.depthOrArrayLayers,
+		.aspect = aspect,
+	};
+
+	WGPUTextureView view = wgpuTextureCreateView(texture, &texture_view_desc);
+
+	TextureInfo *texture_info = VersatileResource::allocate<TextureInfo>(resources_allocator);
+	texture_info->texture = texture;
+	texture_info->view = view;
+	texture_info->rd_texture_format = p_format.format;
+	texture_info->texture_desc = texture_desc;
+	texture_info->texture_view_desc = texture_view_desc;
+	texture_info->is_original_texture = true;
+	texture_info->is_using_depth = uses_depth_or_array_layers;
+
+	return TextureID(texture_info);
+}
+
+RenderingDeviceDriver::TextureID RenderingDeviceDriverWebGpu::texture_create_from_extension(uint64_t p_native_texture, TextureType p_type, DataFormat p_format, uint32_t p_array_layers, bool p_depth_stencil, uint32_t p_mipmaps) {
+	// TODO: impl
+	CRASH_NOW_MSG("TODO --> RenderingDeviceDriverWebGpu::texture_create_from_extension");
+}
+
+RenderingDeviceDriver::TextureID RenderingDeviceDriverWebGpu::texture_create_shared(TextureID p_original_texture, const TextureView &p_view) {
+	TextureInfo *texture_info = (TextureInfo *)p_original_texture.id;
+
+	// print_error("RenderingDeviceDriverWebGpu::texture_create_shared ----------------------------------------------");
+
+	// HACK: We need to account for the fact that some texture formats may not support the usages of the
+	// The vulkan driver does a check then unflags certain usages, but we don't have that ability.
+	// Note that on wgpu vulkan, this will fail old versions of the the api (1.0 with minimal extensions).
+	WGPUTextureUsage texture_view_usage = texture_info->texture_desc.usage;
+	if (p_view.format == DATA_FORMAT_R8G8B8A8_SRGB) {
+		if (texture_info->texture_desc.usage & WGPUTextureUsage_StorageBinding) {
+			texture_view_usage &= (~WGPUTextureUsage_StorageBinding);
+		}
+	}
+
+	WGPUTextureComponentSwizzleDescriptor texture_view_desc_extras = (WGPUTextureComponentSwizzleDescriptor){
+		.chain = (WGPUChainedStruct){
+				.next = nullptr,
+				.sType = (WGPUSType)WGPUSType_TextureComponentSwizzleDescriptor,
+		},
+		.swizzle = (WGPUTextureComponentSwizzle){
+				.r = webgpu_component_swizzle_from_rd(p_view.swizzle_r),
+				.g = webgpu_component_swizzle_from_rd(p_view.swizzle_g),
+				.b = webgpu_component_swizzle_from_rd(p_view.swizzle_b),
+				.a = webgpu_component_swizzle_from_rd(p_view.swizzle_a),
+		},
+	};
+
+	WGPUTextureViewDescriptor texture_view_desc = (WGPUTextureViewDescriptor){
+		.nextInChain = (WGPUChainedStruct *)&texture_view_desc_extras,
+		.format = webgpu_texture_format_from_rd(p_view.format, true),
+		.dimension = texture_info->texture_view_desc.dimension,
+		.mipLevelCount = texture_info->texture_view_desc.mipLevelCount,
+		.arrayLayerCount = texture_info->texture_view_desc.arrayLayerCount,
+		.usage = texture_view_usage,
+	};
+
+	WGPUTextureView view = wgpuTextureCreateView(texture_info->texture, &texture_view_desc);
+
+	TextureInfo *new_texture_info = VersatileResource::allocate<TextureInfo>(resources_allocator);
+	*new_texture_info = *texture_info;
+	new_texture_info->view = view;
+	new_texture_info->is_original_texture = false;
+	new_texture_info->texture_view_desc = texture_view_desc;
+
+	return TextureID(new_texture_info);
+}
+
+RenderingDeviceDriver::TextureID RenderingDeviceDriverWebGpu::texture_create_shared_from_slice(TextureID p_original_texture, const TextureView &p_view, TextureSliceType p_slice_type, uint32_t p_layer, uint32_t p_layers, uint32_t p_mipmap, uint32_t p_mipmaps) {
+	TextureInfo *texture_info = (TextureInfo *)p_original_texture.id;
+
+	WGPUTextureComponentSwizzleDescriptor texture_view_desc_extras = (WGPUTextureComponentSwizzleDescriptor){
+		.chain = (WGPUChainedStruct){
+				.next = nullptr,
+				.sType = (WGPUSType)WGPUSType_TextureComponentSwizzleDescriptor,
+		},
+		.swizzle = (WGPUTextureComponentSwizzle){
+				.r = webgpu_component_swizzle_from_rd(p_view.swizzle_r),
+				.g = webgpu_component_swizzle_from_rd(p_view.swizzle_g),
+				.b = webgpu_component_swizzle_from_rd(p_view.swizzle_b),
+				.a = webgpu_component_swizzle_from_rd(p_view.swizzle_a),
+		},
+	};
+
+	WGPUTextureFormat view_format = webgpu_texture_format_from_rd(p_view.format, true);
+	WGPUTextureAspect aspect = webgpu_texture_aspect_from_rd_format(p_view.format);
+	WGPUTextureViewDescriptor texture_view_desc = (WGPUTextureViewDescriptor){
+		.nextInChain = (WGPUChainedStruct *)&texture_view_desc_extras,
+		.format = view_format,
+		.dimension = texture_info->texture_view_desc.dimension,
+		.baseMipLevel = p_mipmap,
+		.mipLevelCount = p_mipmaps,
+		.baseArrayLayer = p_layer,
+		.arrayLayerCount = p_layers,
+		.aspect = aspect,
+	};
+
+	switch (p_slice_type) {
+		case RenderingDeviceCommons::TEXTURE_SLICE_2D:
+			texture_view_desc.dimension = WGPUTextureViewDimension_2D;
+			break;
+		case RenderingDeviceCommons::TEXTURE_SLICE_CUBEMAP:
+			texture_view_desc.dimension = WGPUTextureViewDimension_Cube;
+			break;
+		case RenderingDeviceCommons::TEXTURE_SLICE_3D:
+			texture_view_desc.dimension = WGPUTextureViewDimension_3D;
+			break;
+		case RenderingDeviceCommons::TEXTURE_SLICE_2D_ARRAY:
+			texture_view_desc.dimension = WGPUTextureViewDimension_2DArray;
+			break;
+		case RenderingDeviceCommons::TEXTURE_SLICE_MAX:
+			return TextureID();
+	}
+
+	WGPUTextureView view = wgpuTextureCreateView(texture_info->texture, &texture_view_desc);
+
+	TextureInfo *new_texture_info = VersatileResource::allocate<TextureInfo>(resources_allocator);
+	*new_texture_info = *texture_info;
+	new_texture_info->view = view;
+	new_texture_info->is_original_texture = false;
+	new_texture_info->texture_view_desc = texture_view_desc;
+
+	return TextureID(new_texture_info);
+}
+
+void RenderingDeviceDriverWebGpu::texture_free(TextureID p_texture) {
+	TextureInfo *texture_info = (TextureInfo *)p_texture.id;
+	if (texture_info->is_original_texture) {
+		wgpuTextureRelease(texture_info->texture);
+	}
+	wgpuTextureViewRelease(texture_info->view);
+	VersatileResource::free(resources_allocator, texture_info);
+}
+
+uint64_t RenderingDeviceDriverWebGpu::texture_get_allocation_size(TextureID p_texture) {
+	// TODO: RenderingDeviceDriverWebGpu::texture_get_allocation_size
+	return 1;
+}
+
+Vector<uint8_t> RenderingDeviceDriverWebGpu::texture_get_data(TextureID p_texture, uint32_t p_layer) {
+	// TODO: RenderingDeviceDriverWebGpu::texture_get_data
+    return Vector<uint8_t>();
+}
+
+void RenderingDeviceDriverWebGpu::texture_get_copyable_layout(
+		TextureID p_texture,
+		const TextureSubresource &p_subresource,
+		TextureCopyableLayout *r_layout) {
+	TextureInfo *texture_info = (TextureInfo *)p_texture.id;
+
+	FormatBlockDimension block_dimensions = webgpu_texture_format_block_dimensions(texture_info->texture_desc.format);
+	uint32_t bytes_per_block =
+			webgpu_texture_format_block_copy_size(
+					texture_info->texture_desc.format,
+					webgpu_texture_aspect_from_rd(p_subresource.aspect));
+
+	uint32_t block_width = block_dimensions.block_dim_x;
+	uint32_t block_height = block_dimensions.block_dim_y;
+
+	uint32_t width = texture_info->texture_desc.size.width;
+	uint32_t height = texture_info->texture_desc.size.height;
+	uint32_t depth = texture_info->texture_desc.size.depthOrArrayLayers;
+
+	uint32_t blocks_per_row =
+			(width + block_width - 1) / block_width;
+
+	uint32_t blocks_per_column =
+			(height + block_height - 1) / block_height;
+
+	r_layout->row_pitch =
+			STEPIFY(blocks_per_row * bytes_per_block, 256);
+
+	r_layout->size =
+			r_layout->row_pitch * blocks_per_column * depth;
+}
+
+BitField<RenderingDeviceDriver::TextureUsageBits> RenderingDeviceDriverWebGpu::texture_get_usages_supported_by_format(DataFormat p_format, bool p_cpu_readable) {
+	// TODO: Read this https://www.w3.org/TR/webgpu/#texture-format-caps
+	BitField<RDD::TextureUsageBits> supported = INT64_MAX;
+
+	// HACK: Here are the formats we dislike.
+	if (p_format == DATA_FORMAT_ASTC_4x4_SRGB_BLOCK || p_format == DATA_FORMAT_R32G32B32_SFLOAT || p_format == DATA_FORMAT_BC1_RGB_UNORM_BLOCK) {
+		return 0;
+	}
+
+	return supported;
+}
+
+bool RenderingDeviceDriverWebGpu::texture_can_make_shared_with_format(TextureID p_texture, DataFormat p_format, bool &r_raw_reinterpretation) {
+	// TODO: RenderingDeviceDriverWebGpu::texture_can_make_shared_with_format
+	// CRASH_NOW_MSG("TODO --> texture_can_make_shared_with_format");
+	return true;
+}
+
+/*****************/
+/**** SAMPLER ****/
+/*****************/
+
+RenderingDeviceDriver::SamplerID RenderingDeviceDriverWebGpu::sampler_create(const SamplerState &p_state) {
+	// STUB: Samplers with anisotropy enabled cannot support nearest filtering.
+	// See https://gpuweb.github.io/gpuweb/#sampler-creation
+	WGPUSamplerDescriptor sampler_desc = (WGPUSamplerDescriptor){
+		.addressModeU = webgpu_address_mode_from_rd(p_state.repeat_u),
+		.addressModeV = webgpu_address_mode_from_rd(p_state.repeat_v),
+		.addressModeW = webgpu_address_mode_from_rd(p_state.repeat_w),
+		.magFilter = p_state.use_anisotropy ? WGPUFilterMode_Linear : webgpu_filter_mode_from_rd(p_state.mag_filter),
+		.minFilter = p_state.use_anisotropy ? WGPUFilterMode_Linear : webgpu_filter_mode_from_rd(p_state.min_filter),
+		.mipmapFilter = p_state.use_anisotropy ? WGPUMipmapFilterMode_Linear : webgpu_mipmap_filter_mode_from_rd(p_state.mip_filter),
+		// NOTE: `min_lod` cannot be negative.
+		// See https://www.w3.org/TR/webgpu/#sampler-creation
+		.lodMinClamp = p_state.min_lod < 0.0f ? 0.0f : p_state.min_lod,
+		.lodMaxClamp = p_state.max_lod,
+		// HACK: disable comparison samplers
+		// .compare = p_state.enable_compare ? webgpu_compare_mode_from_rd(p_state.compare_op) : WGPUCompareFunction_Always,
+		.compare = WGPUCompareFunction_Undefined,
+		.maxAnisotropy = p_state.use_anisotropy ? (uint16_t)p_state.anisotropy_max : (uint16_t)1,
+	};
+
+	WGPUSampler sampler = wgpuDeviceCreateSampler(device, &sampler_desc);
+	return SamplerID(sampler);
+}
+
+void RenderingDeviceDriverWebGpu::sampler_free(SamplerID p_sampler) {
+	WGPUSampler sampler = (WGPUSampler)p_sampler.id;
+	wgpuSamplerRelease(sampler);
+}
+
+bool RenderingDeviceDriverWebGpu::sampler_is_format_supported_for_filter(DataFormat _p_format, SamplerFilter p_filter) {
+	// "descriptor.magFilter, descriptor.minFilter, and descriptor.mipmapFilter must be "linear"."
+	return p_filter == SamplerFilter::SAMPLER_FILTER_LINEAR;
+}
+
+/**********************/
+/**** VERTEX ARRAY ****/
+/**********************/
+
+// NOTE: The attributes in `p_vertex_attribs` must be in order.
+RenderingDeviceDriver::VertexFormatID RenderingDeviceDriverWebGpu::vertex_format_create(Span<VertexAttribute> p_vertex_attribs, const VertexAttributeBindingsMap &p_vertex_bindings) {
+	VertexFormatInfo *vertex_format_info = VersatileResource::allocate<VertexFormatInfo>(resources_allocator);
+	vertex_format_info->layouts.resize_initialized(p_vertex_bindings.size());
+	vertex_format_info->vertex_attributes.resize_initialized(p_vertex_attribs.size());
+
+	COLOR_PRINT("blue", "vertex_format_create attributes: " + itos(p_vertex_attribs.size()) + " bindings: " + itos(p_vertex_bindings.size()))
+
+	for (uint32_t i = 0; i < p_vertex_attribs.size(); i++) {
+		VertexAttribute attrib = p_vertex_attribs[i];
+		COLOR_PRINT("blue", " attribute " + itos(i) +
+			" location: " + itos(attrib.location) +
+			" binding: " + itos(attrib.binding) +
+			" offset: " + itos(attrib.offset) +
+			" stride: " + itos(attrib.stride) +
+			" freq: " + itos(attrib.frequency)
+		);
+
+		vertex_format_info->vertex_attributes.set(i,
+				(WGPUVertexAttribute){
+						.format = webgpu_vertex_format_from_rd(attrib.format),
+						.offset = attrib.offset,
+						.shaderLocation = attrib.location,
+				});
+	}
+
+	if (p_vertex_bindings.size() > 1) {
+		// need to find matching attributes for each binding instead of all, I think
+		ERR_PRINT("TODO: RenderingDeviceDriverWebGpu::vertex_format_create multi-layout/buffer");
+	}
+
+	int layout_index = 0;
+	for (const VertexAttributeBindingsMap::KV &E : p_vertex_bindings) {
+		const VertexAttributeBinding &binding = E.value;
+		COLOR_PRINT("blue", " attribute key " + itos(E.key) +
+			" stride: " + itos(binding.stride) +
+			" freq: " + itos(binding.frequency));
+
+		WGPUVertexStepMode step_mode = binding.frequency == VertexFrequency::VERTEX_FREQUENCY_VERTEX ? WGPUVertexStepMode_Vertex : WGPUVertexStepMode_Instance;
+
+		WGPUVertexBufferLayout layout = (WGPUVertexBufferLayout){
+			.stepMode = step_mode,
+			.arrayStride = binding.stride,
+			.attributeCount = vertex_format_info->vertex_attributes.size(),
+			.attributes = vertex_format_info->vertex_attributes.ptr(),
+		};
+		vertex_format_info->layouts.set(layout_index, layout);
+		layout_index++;
+	}
+
+	return VertexFormatID(vertex_format_info);
+}
+
+void RenderingDeviceDriverWebGpu::vertex_format_free(VertexFormatID p_vertex_format) {
+	VertexFormatInfo *vertex_format_info = (VertexFormatInfo *)p_vertex_format.id;
+	VersatileResource::free(resources_allocator, vertex_format_info);
+}
+
+/******************/
+/**** BARRIERS ****/
+/******************/
+
+void RenderingDeviceDriverWebGpu::command_pipeline_barrier(
+		CommandBufferID p_cmd_buffer,
+		BitField<PipelineStageBits> p_src_stages,
+		BitField<PipelineStageBits> p_dst_stages,
+		VectorView<MemoryAccessBarrier> p_memory_barriers,
+		VectorView<BufferBarrier> p_buffer_barriers,
+		VectorView<TextureBarrier> p_texture_barriers,
+        VectorView<AccelerationStructureBarrier> p_acceleration_structure_barriers) {
+	// Empty.
+}
+
+/****************/
+/**** FENCES ****/
+/****************/
+
+RenderingDeviceDriver::FenceID RenderingDeviceDriverWebGpu::fence_create() {
+	// The usage of fences in godot to sync frames is already handled by WebGpu.
+	return FenceID(1);
+}
+
+Error RenderingDeviceDriverWebGpu::fence_wait(FenceID _p_fence) {
+	return OK;
+}
+
+void RenderingDeviceDriverWebGpu::fence_free(FenceID p_fence) {
+	// Empty.
+}
+
+/********************/
+/**** SEMAPHORES ****/
+/********************/
+
+RenderingDeviceDriver::SemaphoreID RenderingDeviceDriverWebGpu::semaphore_create() {
+	// The usage of fences in godot to sync frames is already handled by WebGpu.
+	return SemaphoreID(1);
+}
+
+void RenderingDeviceDriverWebGpu::semaphore_free(SemaphoreID _p_semaphore) {
+	// Empty.
+}
+
+/******************/
+/**** COMMANDS ****/
+/******************/
+
+// ----- QUEUE FAMILY -----
+
+RenderingDeviceDriver::CommandQueueFamilyID RenderingDeviceDriverWebGpu::command_queue_family_get(BitField<CommandQueueFamilyBits> _p_cmd_queue_family_bits, RenderingContextDriver::SurfaceID _p_surface) {
+	// WebGpu has no concept of queue families, so this value is unused.
+	return CommandQueueFamilyID(1);
+}
+
+// ----- QUEUE -----
+
+RenderingDeviceDriver::CommandQueueID RenderingDeviceDriverWebGpu::command_queue_create(CommandQueueFamilyID _p_cmd_queue_family, bool _p_identify_as_main_queue) {
+	// WebGpu has only one queue, so this value is unused.
+	return CommandQueueID(1);
+}
+
+Error RenderingDeviceDriverWebGpu::command_queue_execute_and_present(CommandQueueID p_cmd_queue, VectorView<SemaphoreID> p_wait_semaphores, VectorView<CommandBufferID> p_cmd_buffers, VectorView<SemaphoreID> p_cmd_semaphores, FenceID p_cmd_fence, VectorView<SwapChainID> p_swap_chains) {
+	Vector<WGPUCommandBuffer> commands = Vector<WGPUCommandBuffer>();
+
+	for (uint32_t i = 0; i < p_cmd_buffers.size(); i++) {
+		CommandBufferInfo *command_buffer_info = (CommandBufferInfo *)p_cmd_buffers[i].id;
+
+		DEV_ASSERT(command_buffer_info != nullptr);
+		DEV_ASSERT(command_buffer_info->encoder != nullptr);
+
+		WGPUCommandBuffer command_buffer = wgpuCommandEncoderFinish(command_buffer_info->encoder, nullptr);
+		commands.push_back(command_buffer);
+
+		wgpuCommandEncoderRelease(command_buffer_info->encoder);
+		command_buffer_info->encoder = nullptr;
+	}
+
+	wgpuQueueSubmit(queue, commands.size(), commands.ptr());
+
+	for (uint32_t i = 0; i < commands.size(); i++) {
+		WGPUCommandBuffer command_buffer = commands[i];
+		wgpuCommandBufferRelease(command_buffer);
+	}
+
+	// TODO: IMPL
+	// Q: Will we get multiple surfaces?
+	for (uint32_t i = 0; i < p_swap_chains.size(); i++) {
+		SwapChainInfo *swapchain = (SwapChainInfo *)p_swap_chains[i].id;
+		RenderingContextDriverWebGpu::Surface *surface = (RenderingContextDriverWebGpu::Surface *)swapchain->surface;
+
+		wgpuSurfacePresent(surface->surface);
+	}
+
+	return OK;
+}
+
+void RenderingDeviceDriverWebGpu::command_queue_free(CommandQueueID _p_cmd_queue) {
+	// Empty.
+}
+
+// ----- POOL -----
+
+RenderingDeviceDriver::CommandPoolID RenderingDeviceDriverWebGpu::command_pool_create(CommandQueueFamilyID _p_cmd_queue_family, CommandBufferType _p_cmd_buffer_type) {
+	TightLocalVector<CommandBufferInfo *> *command_pool = memnew(TightLocalVector<CommandBufferInfo *>);
+	return CommandPoolID(command_pool);
+}
+
+bool RenderingDeviceDriverWebGpu::command_pool_reset(CommandPoolID p_cmd_pool) {
+	// TODO: RenderingDeviceDriverWebGpu::command_pool_reset
+	return true;
+}
+
+void RenderingDeviceDriverWebGpu::command_pool_free(CommandPoolID p_cmd_pool) {
+	TightLocalVector<CommandBufferInfo *> *command_pool = (TightLocalVector<CommandBufferInfo *> *)p_cmd_pool.id;
+	for (uint32_t i = 0; i < command_pool->size(); i++) {
+		memfree(command_pool->ptr()[i]);
+	}
+	memfree(command_pool);
+}
+
+// ----- BUFFER -----
+
+void RenderingDeviceDriverWebGpu::_flush_active_command_pass(CommandBufferInfo &p_command_buffer_info) {
+	WGPUComputePassEncoder compute_encoder = nullptr;
+	if (p_command_buffer_info.has_compute_commands) {
+		WGPUComputePassDescriptor compute_pass_descriptor = (WGPUComputePassDescriptor){};
+		compute_encoder = wgpuCommandEncoderBeginComputePass(p_command_buffer_info.encoder, &compute_pass_descriptor);
+		p_command_buffer_info.has_compute_commands = false;
+	}
+
+	// `wgpu` skips binding most bind groups if one is missing.
+	// To remedy this, we need to bind missing bind groups before after setting the pipeline but before an "effective" command.
+	// Additionally, we need to preserve previously bound groups on compatible bind group layouts across pipelines.
+
+	PipelineInfo *current_pipeline = nullptr;
+	HashMap<uint32_t, Vector<Pair<uint32_t, WGPUBindGroup>>> render_mock_bind_groups;
+	HashMap<uint32_t, Vector<Pair<uint32_t, WGPUBindGroup>>> compute_mock_bind_groups;
+	HashMap<uint32_t, WGPUBindGroupLayout> bound_layouts;
+
+	for (uint32_t i = 0; i < p_command_buffer_info.commands.size(); i++) {
+		const PassEncoderCommand &command = p_command_buffer_info.commands[i];
+
+		if (command.type == PassEncoderCommand::CommandType::RENDER_SET_PIPELINE || command.type == PassEncoderCommand::CommandType::COMPUTE_SET_PIPELINE) {
+			// Check if this pipeline has a compatible set of bind group layouts.
+			// We want to keep the pipeline if so.
+			bool clear = false;
+			for (KeyValue<uint32_t, WGPUBindGroupLayout> &kv : bound_layouts) {
+				ShaderInfo *shader_info = (ShaderInfo *)command.set_pipeline.pipeline_info->shader_id.id;
+				if (kv.key >= shader_info->bind_group_layouts.size() || shader_info->bind_group_layouts[kv.key] != kv.value) {
+					clear = true;
+					break;
+				}
+			}
+
+			if (clear) {
+				bound_layouts.clear();
+			}
+
+			current_pipeline = command.set_pipeline.pipeline_info;
+		}
+
+		if (current_pipeline) {
+			if (command.type == PassEncoderCommand::CommandType::RENDER_SET_BIND_GROUP || command.type == PassEncoderCommand::CommandType::COMPUTE_SET_BIND_GROUP) {
+				PassEncoderCommand::SetBindGroup data = command.set_bind_group;
+				COLOR_PRINT("green", "flush for shader: " + data.shader_info->shader_name);
+
+				if (ShaderID(data.shader_info) == current_pipeline->shader_id) {
+					bound_layouts.insert(data.group_index, data.shader_info->bind_group_layouts[data.group_index]);
+				}
+			}
+			if (command.is_draw_call() || command.is_dispatch_call()) {
+				ShaderInfo *shader_info = (ShaderInfo *)current_pipeline->shader_id.id;
+				if (shader_info) {
+					HashMap<uint32_t, Vector<Pair<uint32_t, WGPUBindGroup>>> *mock_bind_groups = nullptr;
+					if (command.is_draw_call()) {
+						mock_bind_groups = &render_mock_bind_groups;
+					} else if (command.is_dispatch_call()) {
+						mock_bind_groups = &compute_mock_bind_groups;
+					}
+
+					mock_bind_groups->insert(i, Vector<Pair<uint32_t, WGPUBindGroup>>());
+					Vector<Pair<uint32_t, WGPUBindGroup>> &groups = (*mock_bind_groups)[i];
+
+					for (uint32_t set_idx = 0; set_idx < shader_info->bind_group_layout_descs.size(); set_idx++) {
+						const WGPUBindGroupLayoutDescriptor &desc = shader_info->bind_group_layout_descs[set_idx];
+						if (!bound_layouts.has(set_idx)) {
+							// WARN_PRINT(shader_info->shader_name + ": !bound_layouts.has(set_idx): set_idx = " + itos(set_idx));
+							WGPUBindGroup mock_group = this->_mock_bind_group_create_or_get(desc, shader_info->bind_group_layouts[set_idx], current_pipeline->shader_id, set_idx);
+							groups.push_back(Pair(set_idx, mock_group));
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if (compute_encoder) {
+		for (uint32_t i = 0; i < p_command_buffer_info.commands.size(); i++) {
+			PassEncoderCommand &command = p_command_buffer_info.commands.write[i];
+
+			if (compute_mock_bind_groups.has(i)) {
+				const Vector<Pair<uint32_t, WGPUBindGroup>> &mock_bindings = compute_mock_bind_groups.get(i);
+				for (uint32_t mb_idx = 0; mb_idx < mock_bindings.size(); mb_idx++) {
+					uint32_t set_idx = mock_bindings[mb_idx].first;
+					WGPUBindGroup bind_group = mock_bindings[mb_idx].second;
+					wgpuComputePassEncoderSetBindGroup(compute_encoder, set_idx, bind_group, 0, nullptr);
+				}
+			}
+
+			switch (command.type) {
+				case PassEncoderCommand::CommandType::COMPUTE_SET_PIPELINE: {
+					PassEncoderCommand::SetPipeline data = command.set_pipeline;
+					wgpuComputePassEncoderSetPipeline(compute_encoder, data.pipeline_info->compute_pipeline);
+				} break;
+				case PassEncoderCommand::CommandType::COMPUTE_SET_BIND_GROUP: {
+					PassEncoderCommand::SetBindGroup data = command.set_bind_group;
+					wgpuComputePassEncoderSetBindGroup(compute_encoder, data.group_index, data.bind_group, 0, nullptr);
+				} break;
+				case PassEncoderCommand::CommandType::COMPUTE_SET_PUSH_CONSTANTS: {
+					PassEncoderCommand::ComputeSetPushConstants data = command.compute_set_push_constants;
+					// COLOR_PRINT("green", "COMPUTE_SET_PUSH_CONSTANTS: offset: " + itos(data.offset) + " size: " + itos(command.compute_push_constants.size()));
+					wgpuComputePassEncoderSetImmediates(compute_encoder, data.offset, command.compute_push_constants.ptr(), command.compute_push_constants.size());
+				} break;
+				case PassEncoderCommand::CommandType::COMPUTE_DISPATCH_WORKGROUPS: {
+					PassEncoderCommand::ComputeDispatchWorkgroups data = command.compute_dispatch_workgroups;
+					wgpuComputePassEncoderDispatchWorkgroups(compute_encoder, data.workgroup_count_x, data.workgroup_count_y, data.workgroup_count_z);
+				} break;
+				case PassEncoderCommand::CommandType::COMPUTE_DISPATCH_WORKGROUPS_INDIRECT: {
+					PassEncoderCommand::ComputeDispatchWorkgroupsIndirect data = command.compute_dispatch_workgroups_indirect;
+					wgpuComputePassEncoderDispatchWorkgroupsIndirect(compute_encoder, data.indirect_buffer, data.indirect_offset);
+				} break;
+				default:
+					break;
+			}
+		}
+
+		wgpuComputePassEncoderEnd(compute_encoder);
+		wgpuComputePassEncoderRelease(compute_encoder);
+	}
+
+	WGPURenderPassEncoder render_encoder = nullptr;
+	if (p_command_buffer_info.is_render_pass_active) {
+		WGPURenderPassDescriptor render_pass_descriptor = (WGPURenderPassDescriptor){
+			.colorAttachmentCount = (uint32_t)p_command_buffer_info.active_render_pass_info.color_attachments.size(),
+			.colorAttachments = p_command_buffer_info.active_render_pass_info.color_attachments.ptr(),
+			.depthStencilAttachment = p_command_buffer_info.active_render_pass_info.depth_stencil_attachment.second ? &p_command_buffer_info.active_render_pass_info.depth_stencil_attachment.first : nullptr,
+		};
+		render_encoder = wgpuCommandEncoderBeginRenderPass(p_command_buffer_info.encoder, &render_pass_descriptor);
+		p_command_buffer_info.is_render_pass_active = false;
+	}
+
+	if (render_encoder) {
+		for (uint32_t i = 0; i < p_command_buffer_info.commands.size(); i++) {
+			PassEncoderCommand &command = p_command_buffer_info.commands.write[i];
+
+			if (render_encoder) {
+				if (render_mock_bind_groups.has(i)) {
+					const Vector<Pair<uint32_t, WGPUBindGroup>> &mock_bindings = render_mock_bind_groups.get(i);
+					for (uint32_t mb_idx = 0; mb_idx < mock_bindings.size(); mb_idx++) {
+						uint32_t set_idx = mock_bindings[mb_idx].first;
+						WGPUBindGroup bind_group = mock_bindings[mb_idx].second;
+						wgpuRenderPassEncoderSetBindGroup(render_encoder, set_idx, bind_group, 0, nullptr);
+					}
+				}
+				switch (command.type) {
+					case PassEncoderCommand::CommandType::RENDER_SET_VIEWPORT: {
+						PassEncoderCommand::RenderSetViewport data = command.render_set_viewport;
+						wgpuRenderPassEncoderSetViewport(render_encoder, data.x, data.y, data.width, data.height, data.min_depth, data.max_depth);
+					} break;
+					case PassEncoderCommand::CommandType::RENDER_SET_SCISSOR_RECT: {
+						PassEncoderCommand::RenderSetScissorRect data = command.render_set_scissor_rect;
+						wgpuRenderPassEncoderSetScissorRect(render_encoder, data.x, data.y, data.width, data.height);
+					} break;
+					case PassEncoderCommand::CommandType::RENDER_SET_PIPELINE: {
+						PassEncoderCommand::SetPipeline data = command.set_pipeline;
+						wgpuRenderPassEncoderSetPipeline(render_encoder, data.pipeline_info->render_pipeline);
+					} break;
+					case PassEncoderCommand::CommandType::RENDER_SET_BIND_GROUP: {
+						PassEncoderCommand::SetBindGroup data = command.set_bind_group;
+						wgpuRenderPassEncoderSetBindGroup(render_encoder, data.group_index, data.bind_group, 0, nullptr);
+					} break;
+					case PassEncoderCommand::CommandType::RENDER_DRAW: {
+						PassEncoderCommand::RenderDraw data = command.render_draw;
+						wgpuRenderPassEncoderDraw(render_encoder, data.vertex_count, data.instance_count, data.first_vertex, data.first_instance);
+					} break;
+					case PassEncoderCommand::CommandType::RENDER_DRAW_INDEXED: {
+						PassEncoderCommand::RenderDrawIndexed data = command.render_draw_indexed;
+						wgpuRenderPassEncoderDrawIndexed(render_encoder, data.index_count, data.instance_count, data.first_index, data.base_vertex, data.first_instance);
+					} break;
+					case PassEncoderCommand::CommandType::RENDER_MULTI_DRAW_INDIRECT: {
+						PassEncoderCommand::RenderMultiDrawIndirect data = command.render_multi_draw_indirect;
+						wgpuRenderPassEncoderMultiDrawIndirect(render_encoder, data.indirect_buffer, data.indirect_offset, data.count, nullptr, 0);
+					} break;
+					case PassEncoderCommand::CommandType::RENDER_MULTI_DRAW_INDIRECT_COUNT: {
+						PassEncoderCommand::RenderMultiDrawIndirectCount data = command.render_multi_draw_indirect_count;
+						wgpuRenderPassEncoderMultiDrawIndirect(render_encoder, data.indirect_buffer, data.indirect_offset, data.max_count, data.count_buffer, data.count_offset);
+					} break;
+					case PassEncoderCommand::CommandType::RENDER_MULTI_DRAW_INDEXED_INDIRECT: {
+						PassEncoderCommand::RenderMultiDrawIndexedIndirect data = command.render_multi_draw_indexed_indirect;
+						wgpuRenderPassEncoderMultiDrawIndexedIndirect(render_encoder, data.indirect_buffer, data.indirect_offset, data.count, nullptr, 0);
+					} break;
+					case PassEncoderCommand::CommandType::RENDER_MULTI_DRAW_INDEXED_INDIRECT_COUNT: {
+						PassEncoderCommand::RenderMultiDrawIndexedIndirectCount data = command.render_multi_draw_indexed_indirect_count;
+						wgpuRenderPassEncoderMultiDrawIndexedIndirect(render_encoder, data.indirect_buffer, data.indirect_offset, data.max_count, data.count_buffer, data.count_offset);
+					} break;
+					case PassEncoderCommand::CommandType::RENDER_SET_VERTEX_BUFFER: {
+						PassEncoderCommand::RenderSetVertexBuffer data = command.render_set_vertex_buffer;
+						COLOR_PRINT("blue", "RENDER_SET_VERTEX_BUFFER buffer slot: " + itos(data.slot));
+						wgpuRenderPassEncoderSetVertexBuffer(render_encoder, data.slot, data.buffer, data.offset, data.size);
+					} break;
+					case PassEncoderCommand::CommandType::RENDER_SET_INDEX_BUFFER: {
+						PassEncoderCommand::RenderSetIndexBuffer data = command.render_set_index_buffer;
+						wgpuRenderPassEncoderSetIndexBuffer(render_encoder, data.buffer, data.format, data.offset, data.size);
+					} break;
+					case PassEncoderCommand::CommandType::RENDER_SET_BLEND_CONSTANTS: {
+						const PassEncoderCommand::RenderSetBlendConstant &data = command.render_set_blend_constant;
+						wgpuRenderPassEncoderSetBlendConstant(render_encoder, &data.color);
+					} break;
+					case PassEncoderCommand::CommandType::RENDER_SET_PUSH_CONSTANTS: {
+						const PassEncoderCommand::RenderSetPushConstants &data = command.render_set_push_constants;
+						// COLOR_PRINT("green", "RENDER_SET_PUSH_CONSTANTS: offset: " + itos(data.offset) + " size: " + itos(command.render_push_constants.size()));
+						wgpuRenderPassEncoderSetImmediates(render_encoder, data.offset, command.render_push_constants.ptr(), command.render_push_constants.size());
+					} break;
+					default:
+						break;
+				}
+			}
+		}
+
+		wgpuRenderPassEncoderEnd(render_encoder);
+		wgpuRenderPassEncoderRelease(render_encoder);
+	}
+
+	p_command_buffer_info.commands.clear();
+}
+
+RenderingDeviceDriver::CommandBufferID RenderingDeviceDriverWebGpu::command_buffer_create(CommandPoolID p_cmd_pool) {
+	TightLocalVector<CommandBufferInfo *> *command_pool = (TightLocalVector<CommandBufferInfo *> *)p_cmd_pool.id;
+	CommandBufferInfo *command_buffer_info = VersatileResource::allocate<CommandBufferInfo>(resources_allocator);
+
+	command_buffer_info->encoder = nullptr;
+	command_buffer_info->is_render_pass_active = false;
+
+	command_pool->push_back(command_buffer_info);
+
+	return CommandBufferID(command_buffer_info);
+}
+
+bool RenderingDeviceDriverWebGpu::command_buffer_begin(CommandBufferID p_cmd_buffer) {
+	DEV_ASSERT(p_cmd_buffer.id != 0);
+
+	CommandBufferInfo *command_buffer_info = (CommandBufferInfo *)p_cmd_buffer.id;
+
+	WGPUCommandEncoderDescriptor desc = (WGPUCommandEncoderDescriptor){};
+	command_buffer_info->encoder = wgpuDeviceCreateCommandEncoder(device, &desc);
+
+	return true;
+}
+
+bool RenderingDeviceDriverWebGpu::command_buffer_begin_secondary(CommandBufferID p_cmd_buffer, RenderPassID p_render_pass, uint32_t p_subpass, FramebufferID p_framebuffer) {
+	// TODO: RenderingDeviceDriverWebGpu::command_buffer_begin_secondary
+	CRASH_NOW_MSG("TODO --> command_buffer_begin_secondary");
+}
+
+void RenderingDeviceDriverWebGpu::command_buffer_end(CommandBufferID p_cmd_buffer) {
+	DEV_ASSERT(p_cmd_buffer.id != 0);
+
+	CommandBufferInfo *command_buffer_info = (CommandBufferInfo *)p_cmd_buffer.id;
+
+	DEV_ASSERT(command_buffer_info->encoder != nullptr);
+
+	_flush_active_command_pass(*command_buffer_info);
+}
+
+void RenderingDeviceDriverWebGpu::command_buffer_execute_secondary(CommandBufferID p_cmd_buffer, VectorView<CommandBufferID> p_secondary_cmd_buffers) {
+	// TODO: RenderingDeviceDriverWebGpu::command_buffer_execute_secondary
+	CRASH_NOW_MSG("TODO --> command_buffer_execute_secondary");
+}
+
+/********************/
+/**** SWAP CHAIN ****/
+/********************/
+
+RenderingDeviceDriver::SwapChainID RenderingDeviceDriverWebGpu::swap_chain_create(RenderingContextDriver::SurfaceID p_surface) {
+	// Note: other drivers do: // Create an empty swap chain until it is resized.
+	DEV_ASSERT(p_surface != 0);
+	RenderingContextDriverWebGpu::Surface *surface = (RenderingContextDriverWebGpu::Surface *)p_surface;
+
+	RenderPassInfo *render_pass_info = memnew(RenderPassInfo);
+	render_pass_info->depth_attachment_index = UINT32_MAX;
+
+	surface->configure(this->adapter, this->device);
+
+	render_pass_info->attachments = Vector<RenderPassAttachmentInfo>({ (RenderPassAttachmentInfo){
+			.format = surface->format,
+			.sample_count = 1,
+			.load_op = WGPULoadOp_Clear,
+			.store_op = WGPUStoreOp_Store,
+			.stencil_load_op = WGPULoadOp_Undefined,
+			.stencil_store_op = WGPUStoreOp_Undefined,
+	} });
+	// TODO: The multiview feature is currently disabled, so I will ignore this.
+	render_pass_info->view_count = 1;
+
+	SwapChainInfo *swapchain_info = memnew(SwapChainInfo);
+	swapchain_info->surface = p_surface;
+	swapchain_info->render_pass = RenderPassID(render_pass_info);
+
+	if (context_driver->surface_get_hdr_output_enabled(p_surface)) {
+		// swapchain_info->data_format = DATA_FORMAT_R16G16B16A16_SFLOAT;
+		swapchain_info->color_space = COLOR_SPACE_REC709_LINEAR;
+	} else {
+		// swapchain_info->data_format = DATA_FORMAT_R8G8B8A8_UNORM;
+		swapchain_info->color_space = COLOR_SPACE_REC709_NONLINEAR_SRGB;
+	}
+
+	return SwapChainID(swapchain_info);
+}
+
+Error RenderingDeviceDriverWebGpu::swap_chain_resize(CommandQueueID _p_cmd_queue, SwapChainID p_swap_chain, uint32_t _p_desired_framebuffer_count) {
+	SwapChainInfo *swapchain_info = (SwapChainInfo *)p_swap_chain.id;
+	RenderingContextDriverWebGpu::Surface *surface = (RenderingContextDriverWebGpu::Surface *)swapchain_info->surface;
+
+	surface->configure(this->adapter, this->device);
+	context_driver->surface_set_needs_resize(swapchain_info->surface, false);
+
+	return OK;
+}
+
+RenderingDeviceDriver::FramebufferID RenderingDeviceDriverWebGpu::swap_chain_acquire_framebuffer(CommandQueueID p_cmd_queue, SwapChainID p_swap_chain, bool &r_resize_required) {
+	SwapChainInfo *swapchain_info = (SwapChainInfo *)p_swap_chain.id;
+	if (context_driver->surface_get_needs_resize(swapchain_info->surface)) {
+		r_resize_required = true;
+		return FramebufferID();
+	}
+
+	FramebufferInfo *framebuffer_info = memnew(FramebufferInfo);
+	framebuffer_info->maybe_swapchain = p_swap_chain;
+
+	return FramebufferID(framebuffer_info);
+}
+
+RenderingDeviceDriver::RenderPassID RenderingDeviceDriverWebGpu::swap_chain_get_render_pass(SwapChainID p_swap_chain) {
+	SwapChainInfo *swapchain_info = (SwapChainInfo *)p_swap_chain.id;
+	return swapchain_info->render_pass;
+}
+
+RenderingDeviceDriver::DataFormat RenderingDeviceDriverWebGpu::swap_chain_get_format(SwapChainID p_swap_chain) {
+	SwapChainInfo *swapchain_info = (SwapChainInfo *)p_swap_chain.id;
+	RenderingContextDriverWebGpu::Surface *surface = (RenderingContextDriverWebGpu::Surface *)swapchain_info->surface;
+
+	return surface->rd_format;
+}
+
+RenderingDeviceDriver::ColorSpace RenderingDeviceDriverWebGpu::swap_chain_get_color_space(SwapChainID p_swap_chain) {
+	SwapChainInfo *swapchain_info = (SwapChainInfo *)p_swap_chain.id;
+	return swapchain_info->color_space;
+}
+
+void RenderingDeviceDriverWebGpu::swap_chain_free(SwapChainID p_swap_chain) {
+	SwapChainInfo *swapchain_info = (SwapChainInfo *)p_swap_chain.id;
+
+	memdelete((RenderPassInfo *)swapchain_info->render_pass.id);
+	memdelete(swapchain_info);
+}
+
+/*********************/
+/**** FRAMEBUFFER ****/
+/*********************/
+
+RenderingDeviceDriver::FramebufferID RenderingDeviceDriverWebGpu::framebuffer_create(RenderPassID p_render_pass, VectorView<TextureID> p_attachments, uint32_t _p_width, uint32_t _p_height) {
+	FramebufferInfo *framebuffer_info = memnew(FramebufferInfo);
+	framebuffer_info->maybe_swapchain = SwapChainID();
+
+	Vector<TextureID> attachments = Vector<TextureID>();
+	for (uint32_t i = 0; i < p_attachments.size(); i++) {
+		attachments.push_back(p_attachments[i]);
+	}
+	framebuffer_info->attachments = attachments;
+
+	return FramebufferID(framebuffer_info);
+}
+
+void RenderingDeviceDriverWebGpu::framebuffer_free(FramebufferID p_framebuffer) {}
+
+/****************/
+/**** SHADER ****/
+/****************/
+
+#if 0
+Vector<uint8_t> shader_compile_binary_from_spirv(VectorView<ShaderStageSPIRVData> p_spirv, const String &p_shader_name) {
+	// HACK: I will ignore these shaders until a better workaround is found.
+	// I doubt we actually need these shaders for 2D games.
+	if (p_shader_name.contains("GiShader")) {
+		ERR_FAIL_V_MSG(Vector<uint8_t>(), "Refusing to compile GiShader*");
+	}
+
+	// HACK: There is no way to create a binding layout for the `depth_buffer` uniform using reflection data.
+	// Since this is presumably just for debug, we will skip this.
+	if (p_shader_name.contains("ClusterDebugShaderRD:0")) {
+		ERR_FAIL_V_MSG(Vector<uint8_t>(), "Refusing to compile ClusterDebugShaderRD*");
+	}
+
+	ShaderReflection shader_refl;
+	if (_reflect_spirv(p_spirv, shader_refl) != OK) {
+		return Vector<uint8_t>();
+	}
+
+	// Fill `ShaderBinaryWebGpu::Data`
+	WebGpuShaderBinary::Data binary_data;
+	binary_data.vertex_input_mask = shader_refl.vertex_input_mask;
+	binary_data.fragment_output_mask = shader_refl.fragment_output_mask;
+	binary_data.is_compute = shader_refl.is_compute;
+	binary_data.compute_local_size[0] = shader_refl.compute_local_size[0];
+	binary_data.compute_local_size[1] = shader_refl.compute_local_size[1];
+	binary_data.compute_local_size[2] = shader_refl.compute_local_size[2];
+	binary_data.set_count = shader_refl.uniform_sets.size();
+	binary_data.push_constant_size = shader_refl.push_constant_size;
+	for (uint32_t i = 0; i < SHADER_STAGE_MAX; i++) {
+		if (shader_refl.push_constant_stages.has_flag((ShaderStage)(1 << i))) {
+			binary_data.push_constant_stages |= webgpu_shader_stage_from_rd((ShaderStage)i);
+		}
+	}
+
+	CharString shader_name = p_shader_name.utf8();
+	binary_data.shader_name_len = shader_name.length();
+	binary_data.set_count = shader_refl.uniform_sets.size();
+	binary_data.stages_count = p_spirv.size();
+	binary_data.override_count = shader_refl.specialization_constants.size();
+
+	// Perform appropriate SPIR-V WebGPU Transforms
+	Vector<ShaderStageSPIRVData> spirv;
+	Vector<TransformCorrectionMap> correction_maps;
+
+	for (uint32_t i = 0; i < p_spirv.size(); i++) {
+		Vector<uint32_t> in_spirv;
+		in_spirv.resize(p_spirv[i].spirv.size() / 4);
+		memcpy(in_spirv.ptrw(), p_spirv[i].spirv.ptr(), p_spirv[i].spirv.size());
+
+		{
+			TransformCorrectionMap map = SPIRV_WEBGPU_TRANSFORM_CORRECTION_MAP_NULL;
+			uint32_t *combimg_out_spv, combimg_out_count;
+			spirv_webgpu_transform_combimgsampsplitter_alloc(
+					in_spirv.ptrw(), in_spirv.size(), &combimg_out_spv, &combimg_out_count, &map);
+
+			uint32_t *dref_out_spv, dref_out_count;
+			spirv_webgpu_transform_drefsplitter_alloc(combimg_out_spv, combimg_out_count, &dref_out_spv, &dref_out_count, &map);
+
+			uint32_t *isnanisinf_out_spv, isnanisinf_out_count;
+			spirv_webgpu_transform_isnanisinfpatch_alloc(dref_out_spv, dref_out_count, &isnanisinf_out_spv, &isnanisinf_out_count);
+
+			uint32_t *storagecube_out_spv, storagecube_out_count;
+			spirv_webgpu_transform_storagecubepatch_alloc(isnanisinf_out_spv, isnanisinf_out_count, &storagecube_out_spv, &storagecube_out_count, &map);
+
+			uint32_t *final_spv = storagecube_out_spv;
+			uint32_t final_count = storagecube_out_count;
+			Vector<uint8_t> out_spirv = Vector<uint8_t>();
+			out_spirv.resize_initialized(final_count * 4);
+			memcpy((uint8_t *)out_spirv.ptrw(), (uint8_t *)final_spv, final_count * 4);
+
+			spirv.push_back((ShaderStageSPIRVData){
+					.shader_stage = p_spirv[i].shader_stage,
+					.spirv = out_spirv,
+			});
+
+			spirv_webgpu_transform_combimgsampsplitter_free(combimg_out_spv);
+			spirv_webgpu_transform_drefsplitter_free(dref_out_spv);
+			spirv_webgpu_transform_isnanisinfpatch_free(isnanisinf_out_spv);
+
+			correction_maps.push_back(map);
+		}
+	}
+
+	// We have multiple correction maps (presumably for two stages)!
+	// Mirror them so that our layouts are consistent.
+	ERR_FAIL_COND_V_MSG(correction_maps.size() > 2, Vector<uint8_t>(), "Unexpected, more than 2 stages in one shader");
+	TransformCorrectionMap correction_map = SPIRV_WEBGPU_TRANSFORM_CORRECTION_MAP_NULL;
+	if (correction_maps.size() == 1) {
+		correction_map = correction_maps[0];
+	} else if (correction_maps.size() == 2) {
+		TransformCorrectionMap left_map = correction_maps[0];
+		TransformCorrectionMap right_map = correction_maps[1];
+
+		Vector<uint8_t> &left_spirv = spirv.write[0].spirv;
+		Vector<uint8_t> &right_spirv = spirv.write[1].spirv;
+
+		uint32_t *out_left_spirv;
+		uint32_t out_left_spirv_size;
+		uint32_t *out_right_spirv;
+		uint32_t out_right_spirv_size;
+
+		spirv_webgpu_transform_mirrorpatch_alloc(
+				(uint32_t *)left_spirv.ptr(), left_spirv.size() / 4, &left_map,
+				(uint32_t *)right_spirv.ptr(), right_spirv.size() / 4, &right_map,
+				&out_left_spirv, &out_left_spirv_size,
+				&out_right_spirv, &out_right_spirv_size);
+
+		left_spirv.resize_initialized(out_left_spirv_size * 4);
+		memcpy((uint8_t *)left_spirv.ptrw(), (uint8_t *)out_left_spirv, out_left_spirv_size * 4);
+
+		right_spirv.resize_initialized(out_right_spirv_size * 4);
+		memcpy((uint8_t *)right_spirv.ptrw(), (uint8_t *)out_right_spirv, out_right_spirv_size * 4);
+
+		// Now, both correction maps should be mirrored, we can use either (right is always right)
+		correction_map = right_map;
+
+		spirv_webgpu_transform_mirrorpatch_free(out_left_spirv, out_right_spirv);
+	}
+
+	// Translate SPIR-V to WGSL and patch specialization constants
+	Vector<CharString> wgsl_sources;
+	// We don't get enough information from SPIR-V reflection alone, so we need some hints from naga.
+	HashMap<uint32_t, HashMap<uint32_t, WebGpuTranslateBindingLayout>> merged_binding_hints;
+	for (int i = 0; i < spirv.size(); i++) {
+		const ShaderStageSPIRVData &data = spirv[i];
+		ConvertResult result = webgpu_translate_spirv_to_wgsl((uint32_t *)data.spirv.ptr(), data.spirv.size() / 4);
+		if (result.error_string != nullptr) {
+			print_line("[WGPU] WGSL compiliation ", p_shader_name, "on step", result.failure_stage, ":", result.error_string.ptr());
+			// HACK: exit so that we can debug this easier.
+			// exit(1);
+			return Vector<uint8_t>();
+		}
+
+		wgsl_sources.push_back(CharString(result.wgsl_string));
+
+		// Merge binding hints and cross check across stages.
+		for (KeyValue<uint32_t, HashMap<uint32_t, WebGpuTranslateBindingLayout>> &set_kv : result.binding_hints) {
+			if (!merged_binding_hints.has(set_kv.key)) {
+				merged_binding_hints.insert(set_kv.key, HashMap<uint32_t, WebGpuTranslateBindingLayout>());
+			}
+			HashMap<uint32_t, WebGpuTranslateBindingLayout> &bindings = merged_binding_hints.get(set_kv.key);
+			for (KeyValue<uint32_t, WebGpuTranslateBindingLayout> &binding_kv : set_kv.value) {
+				if (bindings.has(binding_kv.key)) {
+					const WebGpuTranslateBindingLayout &existing_binding = bindings.get(binding_kv.key);
+					if (!webgpu_translate_compare_binding_layout(existing_binding, binding_kv.value)) {
+						ERR_FAIL_V_MSG(Vector<uint8_t>(), vformat("Mismatched shader binding hints from binding (%d, %d) %s", set_kv.key, binding_kv.key, p_shader_name));
+					}
+				} else {
+					bindings.insert(binding_kv.key, binding_kv.value);
+				}
+			}
+		}
+	}
+
+	// Fill `ShaderBinaryWebGpu::DataBindingInput`
+	Vector<Vector<WebGpuShaderBinary::DataBindingInput>> binary_sets;
+	for (int set_idx = 0; set_idx < shader_refl.uniform_sets.size(); set_idx++) {
+		const Vector<ShaderUniform> &set_refl = shader_refl.uniform_sets[set_idx];
+		Vector<WebGpuShaderBinary::DataBindingInput> bindings;
+		for (const ShaderUniform &uniform_refl : set_refl) {
+			WebGpuShaderBinary::DataBinding binding;
+			binding.type = (uint32_t)uniform_refl.type;
+			binding.binding = uniform_refl.binding;
+			binding.stages = (uint32_t)uniform_refl.stages;
+			binding.length = uniform_refl.length;
+			binding.writable = (uint32_t)uniform_refl.writable;
+
+			binding.image_format = uniform_refl.image_format;
+			binding.image_access = uniform_refl.image_access;
+			binding.texture_image_type = uniform_refl.texture_image_type;
+			binding.texture_sample_type = uniform_refl.texture_sample_type;
+			binding.texture_is_multisample = uniform_refl.texture_is_multisample;
+
+			WebGpuShaderBinary::DataBindingInput binding_input;
+			binding_input.binding_hint_size = 0;
+
+			WebGpuShaderBinary::DataBindingHint binding_hint = {};
+			if (merged_binding_hints.has(set_idx)) {
+				const HashMap<uint32_t, WebGpuTranslateBindingLayout> &binding_hints_map = merged_binding_hints.get(set_idx);
+				if (binding_hints_map.has(uniform_refl.binding)) {
+					const WebGpuTranslateBindingLayout &binding_hint_entry = binding_hints_map.get(uniform_refl.binding);
+					switch (binding_hint_entry.type) {
+						case WebGpuTranslateBindingType::UNUSED:
+							binding_hint.type = WebGpuShaderBinary::DataBindingHintType::UNUSED;
+							break;
+						case WebGpuTranslateBindingType::SAMPLER:
+							binding_hint.type = WebGpuShaderBinary::DataBindingHintType::SAMPLER;
+							binding_hint.sampler = (WebGpuShaderBinary::DataBindingSamplerHint){
+								.sampler_type = binding_hint_entry._data.sampler.sampler_type,
+							};
+							break;
+						case WebGpuTranslateBindingType::TEXTURE:
+							binding_hint.type = WebGpuShaderBinary::DataBindingHintType::TEXTURE;
+							binding_hint.texture = (WebGpuShaderBinary::DataBindingTextureHint){
+								.sample_type = binding_hint_entry._data.texture.sample_type,
+								.multisampled = binding_hint_entry._data.texture.multisampled,
+							};
+							break;
+					}
+				}
+			}
+
+			if (correction_map != (TransformCorrectionMap)SPIRV_WEBGPU_TRANSFORM_CORRECTION_MAP_NULL) {
+				uint16_t *corrections = nullptr;
+				uint32_t correction_count = 0;
+				TransformCorrectionStatus status = spirv_webgpu_transform_correction_map_index(correction_map, set_idx, uniform_refl.binding, &corrections, &correction_count);
+
+				if (status == SPIRV_WEBGPU_TRANSFORM_CORRECTION_STATUS_SOME) {
+					for (int i = 0; i < correction_count; i++) {
+						binding_input.corrections.push_back((uint32_t)corrections[i]);
+					}
+				}
+			}
+
+			binding_input.binding = binding;
+			binding_input.binding_hint = binding_hint;
+			binding_input.binding.correction_count = binding_input.corrections.size();
+
+			bindings.push_back(binding_input);
+		}
+		binary_sets.push_back(bindings);
+	}
+
+	// Free transform corrections
+	for (int i = 0; i < correction_maps.size(); i++) {
+		spirv_webgpu_transform_correction_map_free(correction_maps[i]);
+	}
+
+	// Fill out specialization constants for naga
+	// Fill `ShaderBinaryWebGpu::OverrideInput`
+	Vector<WebGpuShaderBinary::OverrideInput> binary_overrides;
+	for (const ShaderSpecializationConstant &refl_sc : shader_refl.specialization_constants) {
+		WebGpuShaderBinary::OverrideInput override_input = (WebGpuShaderBinary::OverrideInput){
+			.stage_flags = refl_sc.stages,
+			.constant_id = refl_sc.constant_id,
+		};
+		binary_overrides.push_back(override_input);
+	}
+
+	// Fill `ShaderBinaryWebGpu::ShaderStageInput`
+	Vector<WebGpuShaderBinary::ShaderStageInput> binary_stages;
+	for (int i = 0; i < wgsl_sources.size(); i++) {
+		const CharString &source = wgsl_sources[i];
+		uint32_t shader_stage = spirv[i].shader_stage;
+		WebGpuShaderBinary::ShaderStageInput stage_input = WebGpuShaderBinary::compress_source_into_input(source, shader_stage);
+		binary_stages.push_back(stage_input);
+	}
+
+	WebGpuShaderBinary::DataInput input = (WebGpuShaderBinary::DataInput){
+		.data = binary_data,
+		.shader_name = shader_name,
+		.sets = binary_sets,
+		.stages = binary_stages,
+		.overrides = binary_overrides,
+
+	};
+
+	WebGpuShaderBinary shader_binary_serializer = WebGpuShaderBinary(input);
+	Vector<uint8_t> shader_binary = shader_binary_serializer.to_byte_array();
+
+	return shader_binary;
+}
+#endif
+
+#if 0
+RenderingDeviceDriver::ShaderID RenderingDeviceDriverWebGpu::shader_create_from_bytecode(const Vector<uint8_t> &p_shader_binary, ShaderDescription &r_shader_desc, String &r_name, const Vector<ImmutableSampler> &p_immutable_samplers) {
+	r_shader_desc = {};
+
+	WebGpuShaderBinary::DataOutput out = WebGpuShaderBinary::parse_input_from_bytes(p_shader_binary);
+	ERR_FAIL_COND_V(out.error, ShaderID());
+	const WebGpuShaderBinary::DataInput &data = out.data;
+	const WebGpuShaderBinary::Data &binary_data = data.data;
+
+	// TODO: Free this if anything goes wrong
+	ShaderInfo *shader_info = VersatileResource::allocate<ShaderInfo>(resources_allocator);
+	*shader_info = {};
+
+	r_shader_desc.push_constant_size = binary_data.push_constant_size;
+	r_shader_desc.vertex_input_mask = binary_data.vertex_input_mask;
+	r_shader_desc.fragment_output_mask = binary_data.fragment_output_mask;
+	r_shader_desc.is_compute = binary_data.is_compute;
+	r_shader_desc.compute_local_size[0] = binary_data.compute_local_size[0];
+	r_shader_desc.compute_local_size[1] = binary_data.compute_local_size[1];
+	r_shader_desc.compute_local_size[2] = binary_data.compute_local_size[2];
+
+	if (binary_data.shader_name_len) {
+		r_name = String::utf8(data.shader_name);
+		shader_info->shader_name = r_name;
+	}
+
+	Vector<Vector<WGPUBindGroupLayoutEntry>> &bind_group_layout_entries = shader_info->bind_group_layout_entries;
+
+	r_shader_desc.uniform_sets.resize(binary_data.set_count);
+	bind_group_layout_entries.resize(binary_data.set_count);
+
+	for (uint32_t set_idx = 0; set_idx < data.sets.size(); set_idx++) {
+		const Vector<WebGpuShaderBinary::DataBindingInput> bindings = data.sets[set_idx];
+		uint32_t wgpu_binding_offset = 0;
+
+		HashMap<uint32_t, Vector<uint32_t>> binding_corrections;
+
+		for (uint32_t binding_idx = 0; binding_idx < bindings.size(); binding_idx++) {
+			const WebGpuShaderBinary::DataBindingInput &binding_input = bindings[binding_idx];
+			const WebGpuShaderBinary::DataBinding binding = binding_input.binding;
+
+			ShaderUniform info;
+			info.type = UniformType(binding.type);
+			info.writable = binding.writable;
+			info.length = binding.length;
+			info.binding = binding.binding;
+			info.stages = binding.stages;
+			info.texture_is_multisample = binding.texture_is_multisample;
+			info.image_format = (DataFormat)binding.image_format;
+			info.image_access = (ShaderUniform::ImageAccess)binding.image_access;
+			info.texture_image_type = (TextureType)binding.texture_image_type;
+			info.texture_sample_type = (ShaderUniform::TextureSampleType)binding.texture_sample_type;
+			r_shader_desc.uniform_sets.write[set_idx].push_back(info);
+
+			WGPUShaderStage shader_stage = 0;
+			for (uint32_t k = 0; k < SHADER_STAGE_MAX; k++) {
+				if ((binding.stages & (1 << k))) {
+					shader_stage |= webgpu_shader_stage_from_rd((ShaderStage)k);
+				}
+			}
+
+			binding_corrections.insert(binding.binding, binding_input.corrections);
+
+			WGPUBindGroupLayoutEntry layout_entry = {};
+			layout_entry.binding = binding.binding + wgpu_binding_offset;
+			layout_entry.visibility = shader_stage;
+			WGPUBindGroupLayoutEntryExtras *layout_entry_extras = ALLOCA_SINGLE(WGPUBindGroupLayoutEntryExtras);
+			*layout_entry_extras = (WGPUBindGroupLayoutEntryExtras){
+				.chain = (WGPUChainedStruct){
+						.sType = (WGPUSType)WGPUSType_BindGroupLayoutEntryExtras,
+				},
+				.count = 1
+			};
+			layout_entry.nextInChain = (const WGPUChainedStruct *)layout_entry_extras;
+
+			switch (info.type) {
+				case UNIFORM_TYPE_SAMPLER: {
+					layout_entry.sampler = (WGPUSamplerBindingLayout){
+						.type = WGPUSamplerBindingType_Filtering
+					};
+					layout_entry_extras->count = binding.length;
+					bind_group_layout_entries.write[set_idx].push_back(layout_entry);
+
+					// Apply only dref splitting corrections
+					for (int i = 0; i < binding_input.corrections.size(); i++) {
+						const uint32_t correction = binding_input.corrections[i];
+
+						wgpu_binding_offset += 1;
+						WGPUBindGroupLayoutEntry correction_entry = layout_entry;
+						correction_entry.binding = binding.binding + wgpu_binding_offset;
+
+						switch (correction) {
+							case SPIRV_WEBGPU_TRANSFORM_CORRECTION_TYPE_SPLIT_DREF_REGULAR:
+								correction_entry.sampler.type = WGPUSamplerBindingType_Filtering;
+								break;
+							case SPIRV_WEBGPU_TRANSFORM_CORRECTION_TYPE_SPLIT_DREF_COMPARISON:
+								correction_entry.sampler.type = WGPUSamplerBindingType_Comparison;
+								break;
+							case SPIRV_WEBGPU_TRANSFORM_CORRECTION_TYPE_SPLIT_COMBINED:
+								ERR_FAIL_V_MSG(ShaderID(), "Expected sampler, got combined image sampler");
+								break;
+						}
+						bind_group_layout_entries.write[set_idx].push_back(correction_entry);
+					}
+				} break;
+				case UNIFORM_TYPE_SAMPLER_WITH_TEXTURE: {
+					WGPUTextureSampleType sampleType = webgpu_texture_sample_type_from_shader_uniform(info.texture_sample_type);
+					if (info.texture_is_multisample && sampleType == WGPUTextureSampleType_Float) {
+						sampleType = WGPUTextureSampleType_UnfilterableFloat;
+					}
+
+					layout_entry.texture = (WGPUTextureBindingLayout){
+						// NOTE: Other texture types don't appear to be supported by spirv reflect, but utexture2D does appear once in godot.
+						.sampleType = sampleType,
+						.viewDimension = webgpu_texture_view_dimension_from_rd(info.texture_image_type),
+						.multisampled = info.texture_is_multisample,
+					};
+					bind_group_layout_entries.write[set_idx].push_back(layout_entry);
+
+					WGPUBindGroupLayoutEntry sampler_layout = layout_entry;
+					sampler_layout.texture.sampleType = WGPUTextureSampleType_BindingNotUsed;
+					sampler_layout.sampler = (WGPUSamplerBindingLayout){
+						.type = WGPUSamplerBindingType_Filtering,
+					};
+
+					bool corrected_combimg_sampler = false;
+					for (int i = 0; i < binding_input.corrections.size(); i++) {
+						const uint32_t correction = binding_input.corrections[i];
+
+						wgpu_binding_offset += 1;
+						WGPUBindGroupLayoutEntry correction_entry = sampler_layout;
+						correction_entry.binding = binding.binding + wgpu_binding_offset;
+
+						switch (correction) {
+							case SPIRV_WEBGPU_TRANSFORM_CORRECTION_TYPE_SPLIT_DREF_REGULAR:
+								layout_entry.texture.sampleType = WGPUTextureSampleType_Depth;
+								ERR_FAIL_V_MSG(ShaderID(), "WebGpu cannot consider the dref split of a combined image sampler");
+								break;
+							case SPIRV_WEBGPU_TRANSFORM_CORRECTION_TYPE_SPLIT_DREF_COMPARISON:
+								layout_entry.texture.sampleType = WGPUTextureSampleType_Depth;
+								ERR_FAIL_V_MSG(ShaderID(), "WebGpu cannot consider the dref split of a combined image sampler");
+								break;
+							case SPIRV_WEBGPU_TRANSFORM_CORRECTION_TYPE_SPLIT_COMBINED:
+								corrected_combimg_sampler = true;
+								break;
+						}
+						bind_group_layout_entries.write[set_idx].push_back(correction_entry);
+					}
+
+					ERR_FAIL_COND_V_MSG(!corrected_combimg_sampler, ShaderID(), "WebGpu correction for combined image sampler unexpectedly skipped");
+
+					// TODO: Figure out array of combined image samplers.
+				} break;
+				case UNIFORM_TYPE_TEXTURE: {
+					WGPUTextureSampleType sampleType = webgpu_texture_sample_type_from_shader_uniform(info.texture_sample_type);
+					if (info.texture_is_multisample && sampleType == WGPUTextureSampleType_Float) {
+						sampleType = WGPUTextureSampleType_UnfilterableFloat;
+					}
+
+					layout_entry.texture = (WGPUTextureBindingLayout){
+						// NOTE: Other texture types don't appear to be supported by spirv reflect, but utexture2D does appear once in godot.
+						.sampleType = sampleType,
+						.viewDimension = webgpu_texture_view_dimension_from_rd(info.texture_image_type),
+						.multisampled = info.texture_is_multisample,
+					};
+					layout_entry_extras->count = binding.length;
+					bind_group_layout_entries.write[set_idx].push_back(layout_entry);
+
+					// Apply only dref splitting corrections
+					for (int i = 0; i < binding_input.corrections.size(); i++) {
+						const uint32_t correction = binding_input.corrections[i];
+
+						wgpu_binding_offset += 1;
+						WGPUBindGroupLayoutEntry correction_entry = layout_entry;
+						correction_entry.binding = binding.binding + wgpu_binding_offset;
+
+						switch (correction) {
+							case SPIRV_WEBGPU_TRANSFORM_CORRECTION_TYPE_SPLIT_DREF_REGULAR:
+								layout_entry.texture.sampleType = WGPUTextureSampleType_Depth;
+								break;
+							case SPIRV_WEBGPU_TRANSFORM_CORRECTION_TYPE_SPLIT_DREF_COMPARISON:
+								layout_entry.texture.sampleType = WGPUTextureSampleType_Depth;
+								break;
+							case SPIRV_WEBGPU_TRANSFORM_CORRECTION_TYPE_SPLIT_COMBINED:
+								ERR_FAIL_V_MSG(ShaderID(), "Expected texture, got combined image sampler");
+								break;
+						}
+						bind_group_layout_entries.write[set_idx].push_back(correction_entry);
+					}
+				} break;
+				case UNIFORM_TYPE_IMAGE: {
+					WGPUStorageTextureAccess access;
+					switch (info.image_access) {
+						case ShaderUniform::ImageAccess::ReadWrite:
+							access = WGPUStorageTextureAccess_ReadWrite;
+							break;
+						case ShaderUniform::ImageAccess::ReadOnly:
+							access = WGPUStorageTextureAccess_ReadOnly;
+							break;
+						case ShaderUniform::ImageAccess::WriteOnly:
+							access = WGPUStorageTextureAccess_WriteOnly;
+							break;
+					}
+
+					// HACK: Replace cube storage texture to bypass error for now.
+					// entry.storageTexture.viewDimension is not "cube" or "cube-array".
+					WGPUTextureViewDimension viewDimension = webgpu_texture_view_dimension_from_rd(info.texture_image_type);
+					if (viewDimension == WGPUTextureViewDimension_Cube) {
+						viewDimension = WGPUTextureViewDimension_2DArray;
+					} else if (viewDimension == WGPUTextureViewDimension_CubeArray) {
+						ERR_FAIL_V_MSG(ShaderID(), "WebGpu storage cube arrays are not supported.");
+					}
+
+					layout_entry.storageTexture = (WGPUStorageTextureBindingLayout){
+						.access = access,
+						.format = webgpu_texture_format_from_rd(info.image_format),
+						.viewDimension = viewDimension,
+					};
+					layout_entry_extras->count = binding.length;
+					bind_group_layout_entries.write[set_idx].push_back(layout_entry);
+				} break;
+				case UNIFORM_TYPE_INPUT_ATTACHMENT: {
+					layout_entry.texture = (WGPUTextureBindingLayout){
+						// NOTE: Other texture types don't appear to be supported by spirv reflect, but utexture2D does appear once in godot.
+						.sampleType = WGPUTextureSampleType_Float,
+						.viewDimension = webgpu_texture_view_dimension_from_rd(info.texture_image_type),
+						.multisampled = info.texture_is_multisample,
+					};
+					bind_group_layout_entries.write[set_idx].push_back(layout_entry);
+				} break;
+				case UNIFORM_TYPE_UNIFORM_BUFFER: {
+					layout_entry.buffer = (WGPUBufferBindingLayout){
+						.type = WGPUBufferBindingType_Uniform,
+						// Godot doesn't support dynamic offset
+						.hasDynamicOffset = false,
+						.minBindingSize = binding.length
+					};
+					bind_group_layout_entries.write[set_idx].push_back(layout_entry);
+				} break;
+				case UNIFORM_TYPE_STORAGE_BUFFER: {
+					layout_entry.buffer = (WGPUBufferBindingLayout){
+						// TODO: Investigate this further.
+						.type = WGPUBufferBindingType_Storage,
+						// .type = info.writable ? WGPUBufferBindingType_Storage : WGPUBufferBindingType_ReadOnlyStorage,
+						// .type = (layout_entry.visibility & WGPUShaderStage_Vertex) ? WGPUBufferBindingType_ReadOnlyStorage : WGPUBufferBindingType_Storage,
+						// Godot doesn't support dynamic offset
+						.hasDynamicOffset = false,
+						.minBindingSize = binding.length
+					};
+					bind_group_layout_entries.write[set_idx].push_back(layout_entry);
+				} break;
+				case UNIFORM_TYPE_TEXTURE_BUFFER:
+				case UNIFORM_TYPE_IMAGE_BUFFER:
+					print_error("WebGpu UNIFORM_TYPE_TEXTURE_BUFFER and UNIFORM_TYPE_IMAGE_BUFFER not supported.");
+					return ShaderID();
+					break;
+				default: {
+					DEV_ASSERT(false);
+				}
+			}
+		}
+		shader_info->set_binding_corrections.insert(set_idx, binding_corrections);
+	}
+
+	for (uint32_t i = 0; i < data.overrides.size(); i++) {
+		const WebGpuShaderBinary::OverrideInput &override = data.overrides[i];
+		CharString key = uitos(override.constant_id).ascii();
+		r_shader_desc.specialization_constants.push_back((ShaderSpecializationConstant){
+				.stages = override.stage_flags,
+				.name = key,
+		});
+
+		if (override.stage_flags & ShaderStage::SHADER_STAGE_VERTEX) {
+			shader_info->vertex_override_layout.insert(override.constant_id, key);
+		} else if (override.stage_flags & ShaderStage::SHADER_STAGE_FRAGMENT) {
+			shader_info->fragment_override_layout.insert(override.constant_id, key);
+		} else if (override.stage_flags & ShaderStage::SHADER_STAGE_COMPUTE) {
+			shader_info->compute_override_layout.insert(override.constant_id, key);
+		}
+	}
+
+	for (uint32_t i = 0; i < data.stages.size(); i++) {
+		const WebGpuShaderBinary::ShaderStageInput &stage = data.stages[i];
+		r_shader_desc.stages.push_back(ShaderStage(stage.shader_stage));
+
+		Vector<uint8_t> source_bytes = WebGpuShaderBinary::decompress_source_with_input(stage);
+		ERR_FAIL_COND_V(source_bytes.size() == 0, ShaderID());
+
+		WGPUShaderSourceWGSL source = (WGPUShaderSourceWGSL){
+			.chain = (WGPUChainedStruct){
+					.next = nullptr,
+					.sType = WGPUSType_ShaderSourceWGSL,
+			},
+			.code = (WGPUStringView){
+					.data = (const char *)source_bytes.ptr(),
+					.length = strlen((char *)source_bytes.ptr()),
+			}
+		};
+
+		WGPUShaderModuleDescriptor shader_module_desc = (WGPUShaderModuleDescriptor){
+			.nextInChain = (const WGPUChainedStruct *)&source,
+		};
+		WGPUShaderModule shader_module = wgpuDeviceCreateShaderModule(device, &shader_module_desc);
+
+		ERR_FAIL_COND_V(!shader_module, ShaderID());
+
+		switch (stage.shader_stage) {
+			case RenderingDeviceCommons::SHADER_STAGE_VERTEX:
+				ERR_FAIL_COND_V_MSG(shader_info->vertex_shader, ShaderID(), "More than one vertex stage in one shader.");
+				shader_info->vertex_shader = shader_module;
+				shader_info->stage_flags |= WGPUShaderStage_Vertex;
+				break;
+			case RenderingDeviceCommons::SHADER_STAGE_FRAGMENT:
+				ERR_FAIL_COND_V_MSG(shader_info->fragment_shader, ShaderID(), "More than one fragment stage in one shader.");
+				shader_info->fragment_shader = shader_module;
+				shader_info->stage_flags |= WGPUShaderStage_Fragment;
+				break;
+			case RenderingDeviceCommons::SHADER_STAGE_COMPUTE:
+				ERR_FAIL_COND_V_MSG(shader_info->compute_shader, ShaderID(), "More than one compute stage in one shader.");
+				shader_info->compute_shader = shader_module;
+				shader_info->stage_flags |= WGPUShaderStage_Compute;
+				break;
+			default:
+				ERR_FAIL_V_MSG(ShaderID(), vformat("WebGpu shader stage %d not supported", stage.shader_stage));
+				break;
+		}
+	}
+
+	DEV_ASSERT((uint32_t)bind_group_layout_entries.size() == binary_data.set_count);
+	for (uint32_t set_idx = 0; set_idx < binary_data.set_count; set_idx++) {
+		WGPUBindGroupLayoutDescriptor bind_group_layout_desc = (WGPUBindGroupLayoutDescriptor){
+			.entryCount = (size_t)bind_group_layout_entries[set_idx].size(),
+			.entries = bind_group_layout_entries[set_idx].ptr(),
+		};
+
+		WGPUBindGroupLayout bind_group_layout = wgpuDeviceCreateBindGroupLayout(device, &bind_group_layout_desc);
+
+		ERR_FAIL_COND_V(!bind_group_layout, ShaderID());
+
+		shader_info->bind_group_layouts.push_back(bind_group_layout);
+		shader_info->bind_group_layout_descs.push_back(bind_group_layout_desc);
+	}
+
+	WGPUPushConstantRange push_constant_range;
+
+	if (binary_data.push_constant_size) {
+		push_constant_range = (WGPUPushConstantRange){
+			.stages = binary_data.push_constant_stages,
+			.start = 0,
+			.end = binary_data.push_constant_size,
+		};
+	}
+	shader_info->push_constant_stage_flags = binary_data.push_constant_stages;
+
+	WGPUPipelineLayoutExtras wgpu_pipeline_extras = (WGPUPipelineLayoutExtras){
+		.chain = (WGPUChainedStruct){
+				.sType = (WGPUSType)WGPUSType_PipelineLayoutExtras,
+		},
+		.pushConstantRangeCount = (size_t)(binary_data.push_constant_size ? 1 : 0),
+		.pushConstantRanges = &push_constant_range,
+	};
+
+	WGPUPipelineLayoutDescriptor pipeline_layout_descriptor = (WGPUPipelineLayoutDescriptor){
+		.nextInChain = (WGPUChainedStruct *)&wgpu_pipeline_extras,
+		.bindGroupLayoutCount = binary_data.set_count,
+		.bindGroupLayouts = shader_info->bind_group_layouts.ptr(),
+	};
+
+	shader_info->pipeline_layout = wgpuDeviceCreatePipelineLayout(device, &pipeline_layout_descriptor);
+	ERR_FAIL_COND_V(!shader_info->pipeline_layout, ShaderID());
+
+	return ShaderID(shader_info);
+}
+#endif
+
+RDD::ShaderID RenderingDeviceDriverWebGpu::shader_create_from_container(const Ref<RenderingShaderContainer> &p_shader_container, const Vector<ImmutableSampler> &p_immutable_samplers) {
+	Ref<RenderingShaderContainerWebGpu> shader_container = p_shader_container;
+	ShaderReflection shader_refl = p_shader_container->get_shader_reflection();
+	ShaderInfo shader_info{};
+	shader_info.shader_name = p_shader_container->shader_name.get_data();
+
+	COLOR_PRINT("blue", "shader_create_from_container: name=" + shader_info.shader_name);
+
+	String error_text;
+	Vector<uint8_t> decompressed_code;
+
+	const int64_t stage_count = shader_refl.stages_vector.size();
+	for (int i = 0; i < stage_count; i++) {
+		const RenderingShaderContainer::Shader &shader = p_shader_container->shaders[i];
+		bool requires_decompression = (shader.code_decompressed_size > 0);
+		if (requires_decompression) {
+			print_verbose("shader_create_from_container: decompressing shader");
+
+			decompressed_code.resize(shader.code_decompressed_size);
+			bool decompressed = p_shader_container->decompress_code(shader.code_compressed_bytes.ptr(), shader.code_compressed_bytes.size(), shader.code_compression_flags, decompressed_code.ptrw(), decompressed_code.size());
+			if (!decompressed) {
+				error_text = vformat("Failed to decompress code on shader stage %s.", String(SHADER_STAGE_NAMES[shader_refl.stages_vector[i]]));
+				break;
+			}
+		}
+		const uint8_t *wgsl_bytes = requires_decompression ? decompressed_code.ptr() : shader.code_compressed_bytes.ptr();
+		uint32_t wgsl_size = requires_decompression ? decompressed_code.size() : shader.code_compressed_bytes.size();
+
+		// String wgsl = String::utf8((char*)wgsl_bytes, wgsl_size);
+		// print_verbose("shader_create_from_container wgsl: " + wgsl);
+
+		WGPUShaderSourceWGSL source = (WGPUShaderSourceWGSL){
+			.chain = (WGPUChainedStruct){
+					.next = nullptr,
+					.sType = WGPUSType_ShaderSourceWGSL,
+			},
+			.code = (WGPUStringView){
+					.data = (const char *)wgsl_bytes,
+					.length = wgsl_size,
+			}
+		};
+
+		Vector<uint8_t> s_name = shader_info.shader_name.to_ascii_buffer();
+		WGPUShaderModuleDescriptor shader_module_desc{
+			.nextInChain = (WGPUChainedStruct *)&source,
+			.label = WGPUStringView{.data = (char *)s_name.ptr(), .length = (size_t)s_name.size()},
+		};
+		WGPUShaderModule shader_module = wgpuDeviceCreateShaderModule(device, &shader_module_desc);
+
+		switch (shader.shader_stage) {
+			case RenderingDeviceCommons::SHADER_STAGE_VERTEX:
+				ERR_FAIL_COND_V_MSG(shader_info.vertex_shader, ShaderID(), "More than one vertex stage in one shader.");
+				shader_info.vertex_shader = shader_module;
+				shader_info.stage_flags |= WGPUShaderStage_Vertex;
+				break;
+			case RenderingDeviceCommons::SHADER_STAGE_FRAGMENT:
+				ERR_FAIL_COND_V_MSG(shader_info.fragment_shader, ShaderID(), "More than one fragment stage in one shader.");
+				shader_info.fragment_shader = shader_module;
+				shader_info.stage_flags |= WGPUShaderStage_Fragment;
+				break;
+			case RenderingDeviceCommons::SHADER_STAGE_COMPUTE:
+				ERR_FAIL_COND_V_MSG(shader_info.compute_shader, ShaderID(), "More than one compute stage in one shader.");
+				shader_info.compute_shader = shader_module;
+				shader_info.stage_flags |= WGPUShaderStage_Compute;
+				break;
+			default:
+				ERR_FAIL_V_MSG(ShaderID(), vformat("WebGpu shader stage %d not supported", shader.shader_stage));
+				break;
+		}
+	}
+
+	if (!error_text.is_empty()) {
+		ERR_FAIL_V_MSG(ShaderID(), error_text);
+	}
+
+	Vector<Vector<ShaderUniform>> uniforms_sets = shader_refl.uniform_sets;
+	RenderingShaderContainerWebGpu::WebGpuShaderReflection webgpu_refl = shader_container->get_webgpu_shader_reflection();
+	ERR_FAIL_COND_V_MSG(uniforms_sets.size() != webgpu_refl.uniform_sets.size(), ShaderID(), "WebGpu uniform data sets inconsistent.");
+
+	Vector<Vector<WGPUBindGroupLayoutEntry>> &bind_group_layout_entries = shader_info.bind_group_layout_entries;
+	bind_group_layout_entries.resize(uniforms_sets.size());
+
+	for (uint32_t i = 0; i < uniforms_sets.size(); i++) {
+		const Vector<RenderingShaderContainerWebGpu::UniformData> &webgpu_set = webgpu_refl.uniform_sets.ptr()[i];
+
+		uint32_t binding_offset = 0;
+
+		for (uint32_t j = 0; j < uniforms_sets[i].size(); j++) {
+			const ShaderUniform &uniform = uniforms_sets[i][j];
+			const RenderingShaderContainerWebGpu::UniformData &uniform_extra = webgpu_set.ptr()[j];
+
+			WGPUShaderStage shader_stage = 0;
+			for (uint32_t k = 0; k < SHADER_STAGE_MAX; k++) {
+				if ((uniform.stages & (1 << k))) {
+					shader_stage |= webgpu_shader_stage_from_rd((ShaderStage)k);
+				}
+			}
+#if 0
+			COLOR_PRINT("blue", "shader: " + shader_info.shader_name +
+				" dimension: " + itos(uniform_extra.texture_image_type) +
+				" set: " + itos(i) +
+				" binding: " + itos(uniform.binding));
+#endif
+			WGPUBindGroupLayoutEntry layout_entry = {};
+			layout_entry.nextInChain = nullptr;
+			layout_entry.binding = uniform.binding + binding_offset;
+			layout_entry.visibility = shader_stage;
+
+			WGPUTextureSampleType sampleType = uniform_extra.texture_sample_type;
+			if (uniform_extra.texture_is_multisample && sampleType == WGPUTextureSampleType_Float) {
+				sampleType = WGPUTextureSampleType_UnfilterableFloat;
+			}
+			if (sampleType == WGPUTextureSampleType_Depth) {
+				COLOR_PRINT("magenta", "shader: " + shader_info.shader_name + " depth binding: " + itos(uniform.binding) + " set: " + itos(i));
+			}
+
+			switch (uniform.type) {
+				case UNIFORM_TYPE_SAMPLER: {
+					layout_entry.sampler = (WGPUSamplerBindingLayout){
+						.type = (sampleType == WGPUTextureSampleType_Depth) ? WGPUSamplerBindingType_Comparison : WGPUSamplerBindingType_Filtering,
+					};
+					bind_group_layout_entries.write[i].push_back(layout_entry);
+				} break;
+
+				case UNIFORM_TYPE_SAMPLER_WITH_TEXTURE: {
+					layout_entry.texture = (WGPUTextureBindingLayout){
+						// NOTE: Other texture types don't appear to be supported by spirv reflect, but utexture2D does appear once in godot.
+						.sampleType = sampleType,
+						.viewDimension = uniform_extra.texture_image_type,
+						.multisampled = uniform_extra.texture_is_multisample,
+					};
+					bind_group_layout_entries.write[i].push_back(layout_entry);
+
+					// TINT splits sampler2D into texture_2d and sample.
+					// WEBGPU TODO: Should use tint inspector to get actual binding numbers...
+					// and keep a mapping for later use in uniform_set_create
+					// See std::unordered_map<BindingPoint, BindingPoint> sampler_mappings
+					// in options to tint::spirv::reader::ReadIR
+					binding_offset++;
+
+					WGPUBindGroupLayoutEntry layout_entry2 = {};
+					layout_entry2.nextInChain = nullptr;
+					layout_entry2.binding = uniform.binding + binding_offset;
+					layout_entry2.visibility = shader_stage;
+
+					layout_entry2.sampler = (WGPUSamplerBindingLayout){
+						.type = (sampleType == WGPUTextureSampleType_Depth) ? WGPUSamplerBindingType_Comparison : WGPUSamplerBindingType_Filtering,
+					};
+					bind_group_layout_entries.write[i].push_back(layout_entry2);
+				} break;
+
+				case UNIFORM_TYPE_TEXTURE: {
+					// print_error("shader: " + shader_info.shader_name + " texture view dim: " + itos(uniform_extra.texture_image_type));
+
+					layout_entry.texture = (WGPUTextureBindingLayout){
+						// NOTE: Other texture types don't appear to be supported by spirv reflect, but utexture2D does appear once in godot.
+						.sampleType = sampleType,
+						.viewDimension = uniform_extra.texture_image_type,
+						.multisampled = uniform_extra.texture_is_multisample,
+					};
+					bind_group_layout_entries.write[i].push_back(layout_entry);
+				} break;
+
+				case UNIFORM_TYPE_IMAGE: {
+					WGPUTextureViewDimension viewDimension = uniform_extra.texture_image_type;
+					// print_error("shader: " + shader_info.shader_name + " image view dim: " + itos(viewDimension));
+
+					if (viewDimension == WGPUTextureViewDimension_Cube) {
+						viewDimension = WGPUTextureViewDimension_2DArray;
+					} else if (viewDimension == WGPUTextureViewDimension_CubeArray) {
+						ERR_FAIL_V_MSG(ShaderID(), "WebGpu storage cube arrays are not supported.");
+					}
+
+					layout_entry.storageTexture = (WGPUStorageTextureBindingLayout){
+						.access = uniform_extra.image_access,
+						.format = uniform_extra.image_format,
+						.viewDimension = viewDimension,
+					};
+					bind_group_layout_entries.write[i].push_back(layout_entry);
+				} break;
+
+				case UNIFORM_TYPE_INPUT_ATTACHMENT: {
+					layout_entry.texture = (WGPUTextureBindingLayout){
+						// NOTE: Other texture types don't appear to be supported by spirv reflect, but utexture2D does appear once in godot.
+						.sampleType = WGPUTextureSampleType_Float,
+						.viewDimension = uniform_extra.texture_image_type,
+						.multisampled = uniform_extra.texture_is_multisample,
+					};
+					bind_group_layout_entries.write[i].push_back(layout_entry);
+				} break;
+
+				case UNIFORM_TYPE_UNIFORM_BUFFER: {
+					layout_entry.buffer = (WGPUBufferBindingLayout){
+						.type = WGPUBufferBindingType_Uniform,
+						.hasDynamicOffset = false,
+						.minBindingSize = uniform.length
+					};
+					bind_group_layout_entries.write[i].push_back(layout_entry);
+				} break;
+
+				case UNIFORM_TYPE_UNIFORM_BUFFER_DYNAMIC: {
+					WARN_PRINT("UNIFORM_TYPE_UNIFORM_BUFFER_DYNAMIC: WEBGPU TODO");
+					layout_entry.buffer = (WGPUBufferBindingLayout){
+						.type = WGPUBufferBindingType_Uniform,
+						.hasDynamicOffset = false,
+						.minBindingSize = uniform.length
+					};
+					bind_group_layout_entries.write[i].push_back(layout_entry);
+				} break;
+
+				case UNIFORM_TYPE_STORAGE_BUFFER_DYNAMIC: // WEBGPU TODO:
+				case UNIFORM_TYPE_STORAGE_BUFFER: {
+#if 0
+					COLOR_PRINT("blue",
+								"shader: " + shader_info.shader_name +
+								" stage bits: " + itos(layout_entry.visibility) +
+								" index: " + itos(j) +
+								" readonly: " + itos(uniform_extra.read_only_storage) +
+								" bind: " + itos(uniform.binding + binding_offset) +
+								" writable: " + itos(uniform.writable));
+#endif
+					bool is_vertex = layout_entry.visibility & WGPUShaderStage_Vertex;
+					layout_entry.buffer = (WGPUBufferBindingLayout){
+						.type = (uniform_extra.read_only_storage || is_vertex) ? WGPUBufferBindingType_ReadOnlyStorage : WGPUBufferBindingType_Storage,
+						.hasDynamicOffset = false,
+						.minBindingSize = uniform.length
+					};
+					bind_group_layout_entries.write[i].push_back(layout_entry);
+				} break;
+
+				case UNIFORM_TYPE_TEXTURE_BUFFER:
+				case UNIFORM_TYPE_IMAGE_BUFFER:
+				case UNIFORM_TYPE_SAMPLER_WITH_TEXTURE_BUFFER:
+					ERR_FAIL_V_MSG(ShaderID(), "WebGpu unsupported UniformType: "+ itos(uniform.type));
+					break;
+
+				default: {
+					ERR_FAIL_V_MSG(ShaderID(), "WebGpu unknown UniformType: "+ itos(uniform.type));
+				}
+			}
+		}
+	}
+
+	for (uint32_t i = 0; i < uniforms_sets.size(); i++) {
+		String uniform_set_str = "uniform set " + itos(i) + " for " + shader_info.shader_name;
+		Vector<uint8_t> u_name = uniform_set_str.to_ascii_buffer();
+		WGPUBindGroupLayoutDescriptor bind_group_layout_desc{
+			.label = WGPUStringView{.data = (char *)u_name.ptr(), .length = (size_t)u_name.size()},
+			.entryCount = (size_t)bind_group_layout_entries[i].size(),
+			.entries = bind_group_layout_entries[i].ptr(),
+		};
+		WGPUBindGroupLayout bind_group_layout = wgpuDeviceCreateBindGroupLayout(device, &bind_group_layout_desc);
+
+		shader_info.bind_group_layouts.push_back(bind_group_layout);
+		shader_info.bind_group_layout_descs.push_back(bind_group_layout_desc);
+	}
+
+	WGPUPipelineLayoutDescriptor pipeline_layout_descriptor{
+		.nextInChain = nullptr,
+		.label = WGPUStringView{.data = (char *)shader_info.shader_name.to_ascii_buffer().ptr(), .length = (size_t)shader_info.shader_name.length()},
+		.bindGroupLayoutCount = (size_t)shader_info.bind_group_layouts.size(),
+		.bindGroupLayouts = shader_info.bind_group_layouts.ptr(),
+		.immediateSize = shader_refl.push_constant_size,
+	};
+
+	shader_info.pipeline_layout = wgpuDeviceCreatePipelineLayout(device, &pipeline_layout_descriptor);
+	ERR_FAIL_COND_V(!shader_info.pipeline_layout, ShaderID());
+
+	ShaderInfo *shader_info_ptr = VersatileResource::allocate<ShaderInfo>(resources_allocator);
+	*shader_info_ptr = shader_info;
+	return ShaderID(shader_info_ptr);
+}
+
+void RenderingDeviceDriverWebGpu::shader_free(RDD::ShaderID p_shader) {
+	ShaderInfo *shader_info = (ShaderInfo *)p_shader.id;
+
+	for(auto bgl: shader_info->bind_group_layouts) {
+		wgpuBindGroupLayoutRelease(bgl);
+	}
+
+	wgpuPipelineLayoutRelease(shader_info->pipeline_layout);
+
+	shader_destroy_modules(p_shader);
+
+	VersatileResource::free(resources_allocator, shader_info);
+}
+
+void RenderingDeviceDriverWebGpu::shader_destroy_modules(RDD::ShaderID p_shader) {
+	ShaderInfo *shader_info = (ShaderInfo *)p_shader.id;
+
+	if (shader_info->stage_flags & WGPUShaderStage_Vertex) {
+		wgpuShaderModuleRelease(shader_info->vertex_shader);
+	}
+	if (shader_info->stage_flags & WGPUShaderStage_Fragment) {
+		wgpuShaderModuleRelease(shader_info->fragment_shader);
+	}
+	if (shader_info->stage_flags & WGPUShaderStage_Compute) {
+		wgpuShaderModuleRelease(shader_info->compute_shader);
+	}
+}
+
+/*********************/
+/**** UNIFORM SET ****/
+/*********************/
+
+WGPUBindGroup RenderingDeviceDriverWebGpu::_mock_bind_group_create_or_get(const WGPUBindGroupLayoutDescriptor &p_descriptor, WGPUBindGroupLayout p_layout, ShaderID p_shader, uint32_t p_set_index) {
+	if (this->mock_bind_groups.has(p_layout)) {
+		return this->mock_bind_groups.get(p_layout);
+	} else {
+		Vector<BoundUniform> uniforms;
+
+		for (uint32_t i = 0; i < p_descriptor.entryCount; i++) {
+			const WGPUBindGroupLayoutEntry &entry = p_descriptor.entries[i];
+			RDD::ID id;
+			RDD::UniformType type;
+			if (entry.sampler.type != WGPUSamplerBindingType_BindingNotUsed) {
+				type = RDD::UniformType::UNIFORM_TYPE_SAMPLER;
+				id = this->_sampler_mock_binding_create(entry.sampler);
+			} else if (entry.texture.sampleType != WGPUTextureSampleType_BindingNotUsed) {
+				type = RDD::UniformType::UNIFORM_TYPE_TEXTURE;
+				id = this->_texture_mock_binding_create(entry.texture);
+			} else if (entry.storageTexture.access != WGPUStorageTextureAccess_BindingNotUsed) {
+				type = RDD::UniformType::UNIFORM_TYPE_IMAGE;
+				id = this->_storage_texture_mock_binding_create(entry.storageTexture);
+			} else if (entry.buffer.type != WGPUBufferBindingType_BindingNotUsed) {
+				type = RDD::UniformType::UNIFORM_TYPE_UNIFORM_BUFFER;
+				id = this->_buffer_mock_binding_create(entry.buffer);
+			} else {
+				id = ID();
+			}
+			ERR_FAIL_COND_V_MSG(id.id == ID().id, nullptr, "Empty id in _mock_bind_group_create_or_get");
+
+			RDD::BoundUniform uniform{
+					.type = type,
+					.binding = entry.binding };
+			uniform.ids.push_back(id);
+
+			uniforms.push_back(uniform);
+		}
+
+		UniformSetID us = uniform_set_create(uniforms, p_shader, p_set_index, 0);
+		UniformSetInfo *usi = (UniformSetInfo *)us.id;
+
+		WGPUBindGroup bind_group = usi->bind_group; // this->_bind_group_create(uniforms, p_layout);
+		this->mock_bind_groups.insert(p_layout, bind_group);
+		return bind_group;
+	}
+}
+
+RDD::SamplerID RenderingDeviceDriverWebGpu::_sampler_mock_binding_create(WGPUSamplerBindingLayout p_layout) {
+	// TODO: Handle arrayed
+	SamplerState sampler_state = SamplerState();
+	return this->sampler_create(sampler_state);
+}
+
+RDD::TextureID RenderingDeviceDriverWebGpu::_texture_mock_binding_create(WGPUTextureBindingLayout p_layout) {
+	// TODO: Handle arrayed
+	TextureFormat format;
+	TextureView view;
+	format.usage_bits = TextureUsageBits::TEXTURE_USAGE_SAMPLING_BIT;
+
+	switch (p_layout.sampleType) {
+		case WGPUTextureSampleType_Undefined:
+		case WGPUTextureSampleType_Float:
+		case WGPUTextureSampleType_UnfilterableFloat:
+			format.format = DataFormat::DATA_FORMAT_R32G32B32A32_SFLOAT;
+			break;
+		case WGPUTextureSampleType_Depth:
+			format.format = DataFormat::DATA_FORMAT_D32_SFLOAT;
+			format.usage_bits = TextureUsageBits::TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+			break;
+		case WGPUTextureSampleType_Sint:
+			format.format = DataFormat::DATA_FORMAT_R32G32B32A32_SINT;
+			break;
+		case WGPUTextureSampleType_Uint:
+			format.format = RDD::DataFormat::DATA_FORMAT_R32G32B32A32_UINT;
+			break;
+		default:
+			break;
+	}
+	view.format = format.format;
+
+	switch (p_layout.viewDimension) {
+		case WGPUTextureViewDimension_1D:
+			format.texture_type = RenderingDeviceCommons::TEXTURE_TYPE_1D;
+			break;
+		case WGPUTextureViewDimension_2D:
+			format.texture_type = RenderingDeviceCommons::TEXTURE_TYPE_2D;
+			break;
+		case WGPUTextureViewDimension_2DArray:
+			format.texture_type = RenderingDeviceCommons::TEXTURE_TYPE_2D_ARRAY;
+			break;
+		case WGPUTextureViewDimension_Cube:
+			format.texture_type = RenderingDeviceCommons::TEXTURE_TYPE_CUBE;
+			break;
+		case WGPUTextureViewDimension_CubeArray:
+			format.texture_type = RenderingDeviceCommons::TEXTURE_TYPE_CUBE_ARRAY;
+			break;
+		case WGPUTextureViewDimension_3D:
+			format.texture_type = RenderingDeviceCommons::TEXTURE_TYPE_3D;
+			break;
+		default:
+			break;
+	}
+
+	if (p_layout.multisampled) {
+		format.samples = RenderingDeviceCommons::TEXTURE_SAMPLES_1;
+	}
+
+	TextureID texture = this->texture_create(format, view);
+	return texture;
+}
+
+RDD::TextureID RenderingDeviceDriverWebGpu::_storage_texture_mock_binding_create(WGPUStorageTextureBindingLayout p_layout) {
+	TextureFormat format;
+	TextureView view;
+
+	format.usage_bits |= TextureUsageBits::TEXTURE_USAGE_STORAGE_BIT;
+	format.format = rd_texture_format_from_webgpu(p_layout.format);
+	view.format = format.format;
+
+	switch (p_layout.access) {
+		case WGPUStorageTextureAccess_WriteOnly:
+			format.usage_bits |=
+					TextureUsageBits::TEXTURE_USAGE_CAN_COPY_TO_BIT |
+					TextureUsageBits::TEXTURE_USAGE_CAN_UPDATE_BIT;
+			break;
+		case WGPUStorageTextureAccess_ReadOnly:
+			format.usage_bits |= TextureUsageBits::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
+			break;
+		case WGPUStorageTextureAccess_ReadWrite:
+			format.usage_bits |=
+					TextureUsageBits::TEXTURE_USAGE_CAN_COPY_TO_BIT |
+					TextureUsageBits::TEXTURE_USAGE_CAN_UPDATE_BIT |
+					TextureUsageBits::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
+			break;
+		default:
+			break;
+	}
+
+	switch (p_layout.viewDimension) {
+		case WGPUTextureViewDimension_1D:
+			format.texture_type = RenderingDeviceCommons::TEXTURE_TYPE_1D;
+			break;
+		case WGPUTextureViewDimension_2D:
+			format.texture_type = RenderingDeviceCommons::TEXTURE_TYPE_2D;
+			break;
+		case WGPUTextureViewDimension_2DArray:
+			format.texture_type = RenderingDeviceCommons::TEXTURE_TYPE_2D_ARRAY;
+			break;
+		case WGPUTextureViewDimension_Cube:
+			format.texture_type = RenderingDeviceCommons::TEXTURE_TYPE_CUBE;
+			break;
+		case WGPUTextureViewDimension_CubeArray:
+			format.texture_type = RenderingDeviceCommons::TEXTURE_TYPE_CUBE_ARRAY;
+			break;
+		case WGPUTextureViewDimension_3D:
+			format.texture_type = RenderingDeviceCommons::TEXTURE_TYPE_3D;
+			break;
+		default:
+			break;
+	}
+
+	TextureID texture = this->texture_create(format, view);
+	return texture;
+}
+
+RDD::BufferID RenderingDeviceDriverWebGpu::_buffer_mock_binding_create(WGPUBufferBindingLayout p_layout) {
+	BitField<BufferUsageBits> usage = 0;
+	switch (p_layout.type) {
+		case WGPUBufferBindingType_Uniform:
+			usage.set_flag(RDD::BufferUsageBits::BUFFER_USAGE_UNIFORM_BIT);
+			break;
+		case WGPUBufferBindingType_Storage:
+		case WGPUBufferBindingType_ReadOnlyStorage:
+			usage.set_flag(RDD::BufferUsageBits::BUFFER_USAGE_STORAGE_BIT);
+			break;
+		default:
+			break;
+	}
+
+	// HACK: At layout time, we cannot know the size of all mock SSBO's.
+	// If all else fails, we use this hardcoded, big-ish number.
+	// Internally, `wgpu` checks this size using data at draw / dispatch time.
+	// We could also use this "late" data for this purpose (among other hacks) if this issue persists.
+	const uint32_t max_binding_size = 65536;
+	BufferID buffer = this->buffer_create(p_layout.minBindingSize ? p_layout.minBindingSize : max_binding_size, usage, RDD::MemoryAllocationType::MEMORY_ALLOCATION_TYPE_GPU, frames_drawn);
+	return buffer;
+}
+
+#if 0
+WGPUBindGroup RenderingDeviceDriverWebGpu::_bind_group_create(VectorView<BoundUniform> p_uniforms, WGPUBindGroupLayout p_layout) {
+
+}
+#endif
+
+RenderingDeviceDriver::UniformSetID RenderingDeviceDriverWebGpu::uniform_set_create(VectorView<BoundUniform> p_uniforms, ShaderID p_shader, uint32_t p_set_index, int p_linear_pool_index) {
+	ShaderInfo *shader_info = (ShaderInfo *)p_shader.id;
+
+	WGPUBindGroupLayout layout = shader_info->bind_group_layouts[p_set_index];
+
+	Vector<WGPUBindGroupEntry> entries;
+
+	uint32_t num_dynamic_buffers = 0u;
+	const BufferInfo *dynamic_buffers[MAX_DYNAMIC_BUFFERS];
+
+	uint32_t binding_offset = 0;
+	for (uint32_t uniform_idx = 0; uniform_idx < p_uniforms.size(); uniform_idx++) {
+		const BoundUniform &uniform = p_uniforms[uniform_idx];
+		switch (uniform.type) {
+			case RenderingDeviceCommons::UNIFORM_TYPE_SAMPLER: {
+				WGPUBindGroupEntry entry = {};
+				entry.binding = uniform.binding + binding_offset;
+				if (uniform.ids.size() == 1) {
+					entry.sampler = (WGPUSampler)uniform.ids[0].id;
+				} else {
+					WARN_PRINT("RenderingDeviceCommons::UNIFORM_TYPE_SAMPLER multi: TODO WEBGPU size=" + itos(uniform.ids.size()));
+					WGPUSampler *uniform_samplers = ALLOCA_ARRAY(WGPUSampler, uniform.ids.size());
+
+					for (uint32_t j = 0; j < uniform.ids.size(); j++) {
+						WGPUSampler sampler = (WGPUSampler)uniform.ids[j].id;
+						uniform_samplers[j] = sampler;
+					}
+#ifdef WEBGPU_NATIVE // TODO: below is wgpu not dawn
+					WGPUBindGroupEntryExtras *entry_extras = ALLOCA_SINGLE(WGPUBindGroupEntryExtras);
+					*entry_extras = (WGPUBindGroupEntryExtras){
+						.chain = (WGPUChainedStruct){
+								.sType = (WGPUSType)WGPUSType_BindGroupEntryExtras,
+						},
+						.samplers = uniform_samplers,
+						.samplerCount = (size_t)uniform.ids.size(),
+					};
+					entry.nextInChain = (WGPUChainedStruct *)entry_extras;
+#else
+					entry.nextInChain = nullptr;
+#endif // WEBGPU_NATIVE
+				}
+				entries.push_back(entry);
+			} break;
+			case RenderingDeviceCommons::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE: {
+				WGPUBindGroupEntry texture_entry = {};
+				texture_entry.binding = uniform.binding + binding_offset;
+
+				binding_offset += 1;
+
+				WGPUBindGroupEntry sampler_entry = {};
+				sampler_entry.binding = uniform.binding + binding_offset;
+
+				if (uniform.ids.size() == 2) {
+					WGPUSampler sampler = (WGPUSampler)uniform.ids[0].id;
+					TextureInfo *texture_info = (TextureInfo *)uniform.ids[1].id;
+
+					texture_entry.textureView = texture_info->view;
+					sampler_entry.sampler = sampler;
+				} else {
+					WARN_PRINT("RenderingDeviceCommons::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE multi: TODO WEBGPU size=" + itos(uniform.ids.size()));
+					uint32_t uniform_count = uniform.ids.size() / 2;
+					WGPUSampler *uniform_samplers = ALLOCA_ARRAY(WGPUSampler, uniform_count);
+					WGPUTextureView *uniform_texture_views = ALLOCA_ARRAY(WGPUTextureView, uniform_count);
+
+					for (uint32_t i = 0; i < uniform_count; i++) {
+						WGPUSampler sampler = (WGPUSampler)uniform.ids[i * 2 + 0].id;
+						TextureInfo *texture_info = (TextureInfo *)uniform.ids[i * 2 + 1].id;
+
+						uniform_samplers[i] = sampler;
+						uniform_texture_views[i] = texture_info->view;
+#ifdef WEBGPU_NATIVE // TODO: below is wgpu not dawn
+						WGPUBindGroupEntryExtras *texture_view_entry_extras = ALLOCA_SINGLE(WGPUBindGroupEntryExtras);
+						*texture_view_entry_extras = (WGPUBindGroupEntryExtras){
+							.chain = (WGPUChainedStruct){
+									.sType = (WGPUSType)WGPUSType_BindGroupEntryExtras,
+							},
+							.textureViews = uniform_texture_views,
+							.textureViewCount = uniform_count,
+						};
+						texture_entry.nextInChain = (WGPUChainedStruct *)texture_view_entry_extras;
+#else
+						texture_entry.nextInChain = nullptr;
+#endif // WEBGPU_NATIVE
+
+#ifdef WEBGPU_NATIVE // TODO: below is wgpu not dawn
+						WGPUBindGroupEntryExtras *sampler_entry_extras = ALLOCA_SINGLE(WGPUBindGroupEntryExtras);
+						*sampler_entry_extras = (WGPUBindGroupEntryExtras){
+							.chain = (WGPUChainedStruct){
+									.sType = (WGPUSType)WGPUSType_BindGroupEntryExtras,
+							},
+							.samplers = uniform_samplers,
+							.samplerCount = uniform_count,
+						};
+						sampler_entry.nextInChain = (WGPUChainedStruct *)sampler_entry_extras;
+#else
+						sampler_entry.nextInChain = nullptr;
+#endif // WEBGPU_NATIVE
+					}
+				}
+				entries.push_back(texture_entry);
+				entries.push_back(sampler_entry);
+			} break;
+
+			case RenderingDeviceCommons::UNIFORM_TYPE_TEXTURE:
+			case RenderingDeviceCommons::UNIFORM_TYPE_IMAGE:
+			case RenderingDeviceCommons::UNIFORM_TYPE_INPUT_ATTACHMENT: {
+				WGPUBindGroupEntry entry = {};
+				entry.binding = uniform.binding + binding_offset;
+
+				if (uniform.ids.size() == 1) {
+					TextureInfo *texture_info = (TextureInfo *)uniform.ids[0].id;
+					entry.textureView = texture_info->view;
+				} else {
+					WARN_PRINT("RenderingDeviceCommons::UNIFORM_TYPE_TEXTURE/IMAGE/INPUT_ATTACHMENT multi: TODO WEBGPU size=" + itos(uniform.ids.size()));
+					WGPUTextureView *uniform_texture_views = ALLOCA_ARRAY(WGPUTextureView, uniform.ids.size());
+
+					for (uint32_t j = 0; j < uniform.ids.size(); j++) {
+						TextureInfo *texture_info = (TextureInfo *)uniform.ids[j].id;
+						uniform_texture_views[j] = texture_info->view;
+					}
+#ifdef WEBGPU_NATIVE // TODO: below is wgpu not dawn
+					WGPUBindGroupEntryExtras *entry_extras = ALLOCA_SINGLE(WGPUBindGroupEntryExtras);
+					*entry_extras = (WGPUBindGroupEntryExtras){
+						.chain = (WGPUChainedStruct){
+								.sType = (WGPUSType)WGPUSType_BindGroupEntryExtras,
+						},
+						.textureViews = uniform_texture_views,
+						.textureViewCount = (size_t)uniform.ids.size(),
+					};
+					entry.nextInChain = (WGPUChainedStruct *)entry_extras;
+#else
+					entry.nextInChain = nullptr;
+#endif // WEBGPU_NATIVE
+				}
+				entries.push_back(entry);
+			} break;
+			case RenderingDeviceCommons::UNIFORM_TYPE_TEXTURE_BUFFER:
+			case RenderingDeviceCommons::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE_BUFFER:
+			case RenderingDeviceCommons::UNIFORM_TYPE_IMAGE_BUFFER:
+			case RenderingDeviceCommons::UNIFORM_TYPE_ACCELERATION_STRUCTURE:
+				CRASH_NOW_MSG("Unimplemented!"); // TODO.
+				break;
+
+			case RenderingDeviceCommons::UNIFORM_TYPE_UNIFORM_BUFFER_DYNAMIC:
+			case RenderingDeviceCommons::UNIFORM_TYPE_STORAGE_BUFFER_DYNAMIC: {
+				WGPUBindGroupEntry entry = {};
+				entry.binding = uniform.binding + binding_offset;
+
+				BufferInfo *buffer_info = (BufferInfo *)uniform.ids[0].id;
+				entry.buffer = buffer_info->buffer;
+				entry.offset = 0;
+				entry.size = buffer_info->size;
+
+				ERR_FAIL_COND_V_MSG(!buffer_info->is_dynamic(), UniformSetID(),
+						"Sent a buffer without BUFFER_USAGE_DYNAMIC_PERSISTENT_BIT but binding (" + itos(uniform.binding) + "), set (" + itos(p_set_index) + ") is UNIFORM_TYPE_UNIFORM_BUFFER_DYNAMIC instead of UNIFORM_TYPE_UNIFORM_BUFFER.");
+				ERR_FAIL_COND_V_MSG(num_dynamic_buffers >= MAX_DYNAMIC_BUFFERS, UniformSetID(),
+						"Uniform set exceeded the limit of dynamic/persistent buffers. (" + itos(MAX_DYNAMIC_BUFFERS) + ").");
+
+				dynamic_buffers[num_dynamic_buffers++] = buffer_info;
+
+				entries.push_back(entry);
+			} break;
+
+			case RenderingDeviceCommons::UNIFORM_TYPE_UNIFORM_BUFFER:
+			case RenderingDeviceCommons::UNIFORM_TYPE_STORAGE_BUFFER: {
+				WGPUBindGroupEntry entry = {};
+				entry.binding = uniform.binding + binding_offset;
+
+				BufferInfo *buffer_info = (BufferInfo *)uniform.ids[0].id;
+				entry.buffer = buffer_info->buffer;
+				entry.offset = 0;
+				entry.size = buffer_info->size;
+
+				entries.push_back(entry);
+			} break;
+			case RenderingDeviceCommons::UNIFORM_TYPE_MAX:
+				break;
+		}
+	}
+
+	WGPUBindGroupDescriptor bind_group_desc = (WGPUBindGroupDescriptor){
+		.layout = layout,
+		.entryCount = (size_t)entries.size(),
+		.entries = entries.ptr(),
+	};
+
+	WGPUBindGroup bind_group = wgpuDeviceCreateBindGroup(device, &bind_group_desc);
+
+	ERR_FAIL_COND_V(bind_group == nullptr, UniformSetID());
+
+	UniformSetInfo *usi = VersatileResource::allocate<UniformSetInfo>(resources_allocator);
+	usi->bind_group = bind_group;
+	usi->dynamic_buffers.resize(num_dynamic_buffers);
+	for (uint32_t i = 0u; i < num_dynamic_buffers; ++i) {
+		usi->dynamic_buffers[i] = dynamic_buffers[i];
+	}
+
+	return UniformSetID(usi);
+}
+
+void RenderingDeviceDriverWebGpu::uniform_set_free(UniformSetID p_uniform_set) {
+	UniformSetInfo *usi = (UniformSetInfo *)p_uniform_set.id;
+	wgpuBindGroupRelease(usi->bind_group);
+}
+
+uint32_t RenderingDeviceDriverWebGpu::uniform_sets_get_dynamic_offsets(VectorView<UniformSetID> p_uniform_sets, ShaderID p_shader, uint32_t p_first_set_index, uint32_t p_set_count) const {
+	uint32_t mask = 0u;
+	uint32_t shift = 0u;
+#ifdef DEV_ENABLED
+	uint32_t curr_dynamic_offset = 0u;
+#endif
+
+	for (uint32_t i = 0; i < p_set_count; i++) {
+		const UniformSetInfo *usi = (const UniformSetInfo *)p_uniform_sets[i].id;
+		// At this point this assert should already have been validated.
+		DEV_ASSERT(curr_dynamic_offset + usi->dynamic_buffers.size() <= MAX_DYNAMIC_BUFFERS);
+
+		for (const BufferInfo *dynamic_buffer : usi->dynamic_buffers) {
+			DEV_ASSERT(dynamic_buffer->frame_idx < 16u);
+			mask |= dynamic_buffer->frame_idx << shift;
+			shift += 4u;
+		}
+#ifdef DEV_ENABLED
+		curr_dynamic_offset += usi->dynamic_buffers.size();
+#endif
+	}
+
+	return mask;
+}
+
+// ----- COMMANDS -----
+
+void RenderingDeviceDriverWebGpu::command_uniform_set_prepare_for_use(CommandBufferID _p_cmd_buffer, UniformSetID _p_uniform_set, ShaderID _p_shader, uint32_t _p_set_index) {
+	// Empty.
+}
+
+/******************/
+/**** TRANSFER ****/
+/******************/
+
+void RenderingDeviceDriverWebGpu::command_clear_buffer(CommandBufferID p_cmd_buffer, BufferID p_buffer, uint64_t p_offset, uint64_t p_size) {
+	DEV_ASSERT(p_cmd_buffer.id != 0);
+	CommandBufferInfo *command_buffer_info = (CommandBufferInfo *)p_cmd_buffer.id;
+	DEV_ASSERT(command_buffer_info->encoder != nullptr);
+
+	BufferInfo *buffer_info = (BufferInfo *)p_buffer.id;
+
+	wgpuCommandEncoderClearBuffer(command_buffer_info->encoder, buffer_info->buffer, p_offset, p_size);
+
+	if (buffer_info->is_mapped) {
+		this->buffer_unmap(p_buffer);
+	}
+}
+
+void RenderingDeviceDriverWebGpu::command_copy_buffer(CommandBufferID p_cmd_buffer, BufferID p_src_buffer, BufferID p_dst_buffer, VectorView<BufferCopyRegion> p_regions) {
+	DEV_ASSERT(p_cmd_buffer.id != 0);
+	CommandBufferInfo *command_buffer_info = (CommandBufferInfo *)p_cmd_buffer.id;
+	DEV_ASSERT(command_buffer_info->encoder != nullptr);
+
+	BufferInfo *src_buffer_info = (BufferInfo *)p_src_buffer.id;
+	BufferInfo *dst_buffer_info = (BufferInfo *)p_dst_buffer.id;
+
+	for (uint32_t i = 0; i < p_regions.size(); i++) {
+		BufferCopyRegion region = p_regions[i];
+		wgpuCommandEncoderCopyBufferToBuffer(command_buffer_info->encoder, src_buffer_info->buffer, region.src_offset, dst_buffer_info->buffer, region.dst_offset, region.size); // STEPIFY(region.size, 256));
+	}
+
+	if (dst_buffer_info->is_mapped) {
+		this->buffer_unmap(p_dst_buffer);
+	}
+}
+
+void RenderingDeviceDriverWebGpu::command_copy_texture(CommandBufferID p_cmd_buffer, TextureID p_src_texture, TextureLayout _p_src_texture_layout, TextureID p_dst_texture, TextureLayout _p_dst_texture_layout, VectorView<TextureCopyRegion> p_regions) {
+	DEV_ASSERT(p_cmd_buffer.id != 0);
+	CommandBufferInfo *command_buffer_info = (CommandBufferInfo *)p_cmd_buffer.id;
+	DEV_ASSERT(command_buffer_info->encoder != nullptr);
+
+	TextureInfo *src_texture_info = (TextureInfo *)p_src_texture.id;
+	TextureInfo *dst_texture_info = (TextureInfo *)p_dst_texture.id;
+
+	for (uint32_t i = 0; i < p_regions.size(); i++) {
+		TextureCopyRegion region = p_regions[i];
+		WGPUTexelCopyTextureInfo src_texture_cp = (WGPUTexelCopyTextureInfo){
+			.texture = src_texture_info->texture,
+			.mipLevel = region.src_subresources.mipmap,
+			.origin = (WGPUOrigin3D){
+					.x = (uint32_t)region.src_offset.x,
+					.y = (uint32_t)region.src_offset.y,
+					.z = (uint32_t)region.src_offset.z,
+			},
+			.aspect = webgpu_texture_aspect_from_rd_bits(region.src_subresources.aspect),
+		};
+		WGPUTexelCopyTextureInfo dst_texture_cp = (WGPUTexelCopyTextureInfo){
+			.texture = dst_texture_info->texture,
+			.mipLevel = region.dst_subresources.mipmap,
+			.origin = (WGPUOrigin3D){
+					.x = (uint32_t)region.dst_offset.x,
+					.y = (uint32_t)region.dst_offset.y,
+					.z = (uint32_t)region.dst_offset.z,
+			},
+			.aspect = webgpu_texture_aspect_from_rd_bits(region.dst_subresources.aspect),
+		};
+
+		WGPUExtent3D cp_size = (WGPUExtent3D){
+			.width = (uint32_t)region.size.x,
+			.height = (uint32_t)region.size.y,
+			.depthOrArrayLayers = (uint32_t)region.size.z,
+		};
+		wgpuCommandEncoderCopyTextureToTexture(command_buffer_info->encoder, &src_texture_cp, &dst_texture_cp, &cp_size);
+	}
+}
+
+void RenderingDeviceDriverWebGpu::command_resolve_texture(CommandBufferID p_cmd_buffer, TextureID p_src_texture, TextureLayout p_src_texture_layout, uint32_t p_src_layer, uint32_t p_src_mipmap, TextureID p_dst_texture, TextureLayout p_dst_texture_layout, uint32_t p_dst_layer, uint32_t p_dst_mipmap) {
+	// NOTE: No easy support.
+	// CRASH_NOW_MSG("NOT SUPPORTED?");
+}
+void RenderingDeviceDriverWebGpu::command_clear_color_texture(CommandBufferID _p_cmd_buffer, TextureID p_texture, TextureLayout p_texture_layout, const Color &p_color, const TextureSubresourceRange &p_subresources) {
+	// NOTE: No easy support.
+	// CRASH_NOW_MSG("NOT SUPPORTED?");
+}
+
+void RenderingDeviceDriverWebGpu::command_clear_depth_stencil_texture(CommandBufferID p_cmd_buffer, TextureID p_texture, TextureLayout p_texture_layout, float p_depth, uint8_t p_stencil, const TextureSubresourceRange &p_subresources) {
+	// TODO: RenderingDeviceDriverWebGpu::command_clear_depth_stencil_texture
+}
+
+void RenderingDeviceDriverWebGpu::command_copy_buffer_to_texture(CommandBufferID p_cmd_buffer, BufferID p_src_buffer, TextureID p_dst_texture, TextureLayout _p_dst_texture_layout, VectorView<BufferTextureCopyRegion> p_regions) {
+	DEV_ASSERT(p_cmd_buffer.id != 0);
+	CommandBufferInfo *command_buffer_info = (CommandBufferInfo *)p_cmd_buffer.id;
+	DEV_ASSERT(command_buffer_info->encoder != nullptr);
+
+	BufferInfo *src_buffer_info = (BufferInfo *)p_src_buffer.id;
+	TextureInfo *dst_texture_info = (TextureInfo *)p_dst_texture.id;
+
+	FormatBlockDimension block_dimensions = webgpu_texture_format_block_dimensions(dst_texture_info->texture_view_desc.format);
+
+	for (uint32_t i = 0; i < p_regions.size(); i++) {
+		BufferTextureCopyRegion region = p_regions[i];
+
+		uint32_t block_copy_size = webgpu_texture_format_block_copy_size(dst_texture_info->texture_desc.format, dst_texture_info->texture_view_desc.aspect);
+
+		uint32_t block_width = block_dimensions.block_dim_x;
+		uint32_t block_height = block_dimensions.block_dim_y;
+		uint32_t bytes_per_block = block_copy_size;
+
+		uint32_t blocks_per_row =
+				(region.texture_region_size.x + block_width - 1) / block_width;
+
+		uint32_t blocks_per_column =
+				(region.texture_region_size.y + block_height - 1) / block_height;
+
+		WGPUTexelCopyBufferInfo cp_buffer = {
+			.layout = {
+					.offset = region.buffer_offset,
+					.bytesPerRow =
+							(blocks_per_row * bytes_per_block + 255) & ~255,
+					.rowsPerImage =
+							region.texture_region_size.z > 1
+							? blocks_per_column
+							: WGPU_COPY_STRIDE_UNDEFINED,
+			},
+			.buffer = src_buffer_info->buffer,
+		};
+
+		WGPUTexelCopyTextureInfo cp_texture = (WGPUTexelCopyTextureInfo){
+			.texture = dst_texture_info->texture,
+			.mipLevel = region.texture_subresource.mipmap,
+			.origin = (WGPUOrigin3D){
+					.x = (uint32_t)region.texture_offset.x,
+					.y = (uint32_t)region.texture_offset.y,
+					.z = (uint32_t)region.texture_offset.z,
+			},
+			.aspect = webgpu_texture_aspect_from_rd(region.texture_subresource.aspect),
+		};
+		WGPUExtent3D cp_size = (WGPUExtent3D){
+			.width = (uint32_t)region.texture_region_size.x,
+			.height = (uint32_t)region.texture_region_size.y,
+			.depthOrArrayLayers = (uint32_t)region.texture_region_size.z,
+		};
+
+		wgpuCommandEncoderCopyBufferToTexture(command_buffer_info->encoder, &cp_buffer, &cp_texture, &cp_size);
+	}
+
+	if (src_buffer_info->is_mapped) {
+		this->buffer_unmap(p_src_buffer);
+	}
+}
+
+void RenderingDeviceDriverWebGpu::command_copy_texture_to_buffer(CommandBufferID p_cmd_buffer, TextureID p_src_texture, TextureLayout p_src_texture_layout, BufferID p_dst_buffer, VectorView<BufferTextureCopyRegion> p_regions) {
+	DEV_ASSERT(p_cmd_buffer.id != 0);
+	CommandBufferInfo *command_buffer_info = (CommandBufferInfo *)p_cmd_buffer.id;
+	DEV_ASSERT(command_buffer_info->encoder != nullptr);
+
+	TextureInfo *src_texture_info = (TextureInfo *)p_src_texture.id;
+	BufferInfo *dst_buffer_info = (BufferInfo *)p_dst_buffer.id;
+
+	FormatBlockDimension block_dimensions = webgpu_texture_format_block_dimensions(src_texture_info->texture_view_desc.format);
+
+	for (uint32_t i = 0; i < p_regions.size(); i++) {
+		BufferTextureCopyRegion region = p_regions[i];
+
+		uint32_t block_copy_size = webgpu_texture_format_block_copy_size(src_texture_info->texture_desc.format, src_texture_info->texture_view_desc.aspect);
+
+		WGPUTexelCopyTextureInfo cp_texture = (WGPUTexelCopyTextureInfo){
+			.texture = src_texture_info->texture,
+			.mipLevel = region.texture_subresource.mipmap,
+			.origin = (WGPUOrigin3D){
+					.x = (uint32_t)region.texture_offset.x,
+					.y = (uint32_t)region.texture_offset.y,
+					.z = (uint32_t)region.texture_offset.z,
+			},
+			.aspect = webgpu_texture_aspect_from_rd(region.texture_subresource.aspect),
+		};
+
+		WGPUTexelCopyBufferInfo cp_buffer = (WGPUTexelCopyBufferInfo){
+			.layout = (WGPUTexelCopyBufferLayout){
+					.offset = region.buffer_offset,
+					.bytesPerRow = ((region.texture_region_size.x * block_copy_size) / block_dimensions.block_dim_x + 255) & ~255,
+					.rowsPerImage = region.texture_region_size.z > 1 ? region.texture_region_size.y / block_dimensions.block_dim_y : WGPU_COPY_STRIDE_UNDEFINED,
+
+			},
+			.buffer = dst_buffer_info->buffer,
+		};
+
+		WGPUExtent3D cp_size = (WGPUExtent3D){
+			.width = (uint32_t)region.texture_region_size.x,
+			.height = (uint32_t)region.texture_region_size.y,
+			.depthOrArrayLayers = (uint32_t)region.texture_region_size.z,
+		};
+
+		wgpuCommandEncoderCopyTextureToBuffer(command_buffer_info->encoder, &cp_texture, &cp_buffer, &cp_size);
+	}
+
+	if (dst_buffer_info->is_mapped) {
+		this->buffer_unmap(p_dst_buffer);
+	}
+}
+
+/******************/
+/**** PIPELINE ****/
+/******************/
+
+void RenderingDeviceDriverWebGpu::pipeline_free(PipelineID p_pipeline) {
+	// TODO: RenderingDeviceDriverWebGpu::pipeline_free
+}
+
+// ----- BINDING -----
+
+void RenderingDeviceDriverWebGpu::command_bind_push_constants(CommandBufferID p_cmd_buffer, ShaderID p_shader, uint32_t p_first_index, VectorView<uint32_t> p_data) {
+	ShaderInfo *shader_info = (ShaderInfo *)p_shader.id;
+
+	DEV_ASSERT(p_cmd_buffer.id != 0);
+	CommandBufferInfo *command_buffer_info = (CommandBufferInfo *)p_cmd_buffer.id;
+	DEV_ASSERT(command_buffer_info->encoder != nullptr);
+
+	uint32_t byte_size = p_data.size() * (uint32_t)sizeof(uint32_t);
+	Vector<uint8_t> data = Vector<uint8_t>();
+	data.resize(byte_size);
+	memcpy(data.ptrw(), p_data.ptr(), byte_size);
+
+	if (shader_info->stage_flags & WGPUShaderStage_Compute) {
+		command_buffer_info->has_compute_commands = true;
+		command_buffer_info->commands.push_back((PassEncoderCommand){
+				.type = PassEncoderCommand::CommandType::COMPUTE_SET_PUSH_CONSTANTS,
+				.compute_set_push_constants = (PassEncoderCommand::ComputeSetPushConstants){
+						.offset = p_first_index },
+				.compute_push_constants = data,
+		});
+	} else if (shader_info->stage_flags & WGPUShaderStage_Vertex || shader_info->stage_flags & WGPUShaderStage_Fragment) {
+		command_buffer_info->commands.push_back((PassEncoderCommand){
+				.type = PassEncoderCommand::CommandType::RENDER_SET_PUSH_CONSTANTS,
+				.render_set_push_constants = (PassEncoderCommand::RenderSetPushConstants){
+						.stages = shader_info->stage_flags,
+						.offset = p_first_index },
+				.render_push_constants = data,
+		});
+	}
+}
+
+// ----- CACHE -----
+
+bool RenderingDeviceDriverWebGpu::pipeline_cache_create(const Vector<uint8_t> &_p_data) {
+	// WebGpu does not have pipeline caches.
+	return false;
+}
+void RenderingDeviceDriverWebGpu::pipeline_cache_free() {
+	// Empty.
+}
+size_t RenderingDeviceDriverWebGpu::pipeline_cache_query_size() {
+	return 0;
+}
+Vector<uint8_t> RenderingDeviceDriverWebGpu::pipeline_cache_serialize() {
+	return Vector<uint8_t>();
+}
+
+/*******************/
+/**** RENDERING ****/
+/*******************/
+
+// ----- SUBPASS -----
+
+RenderingDeviceDriver::RenderPassID RenderingDeviceDriverWebGpu::render_pass_create(VectorView<Attachment> p_attachments, VectorView<Subpass> _p_subpasses, VectorView<SubpassDependency> _p_subpass_dependencies, uint32_t p_view_count, AttachmentReference p_fragment_density_map_attachment) {
+	// WebGpu does not have subpasses so we will store this info until we create a render pipeline later.
+	RenderPassInfo *render_pass_info = VersatileResource::allocate<RenderPassInfo>(resources_allocator);
+	render_pass_info->depth_attachment_index = UINT32_MAX;
+
+	render_pass_info->attachments = Vector<RenderPassAttachmentInfo>();
+	for (uint32_t i = 0; i < p_attachments.size(); i++) {
+		Attachment attachment = p_attachments[i];
+		bool is_depth_stencil =
+				attachment.final_layout == TEXTURE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL ||
+				attachment.final_layout == TEXTURE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+		bool is_depth_stencil_read_only =
+				attachment.final_layout == TEXTURE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+
+		if (is_depth_stencil) {
+			render_pass_info->depth_attachment_index = i;
+		}
+
+		RenderPassAttachmentInfo attachment_info = (RenderPassAttachmentInfo){
+			.format = webgpu_texture_format_from_rd(attachment.format, true),
+			// TODO: Assert that p_format.samples follows this behavior.
+			.sample_count = (uint32_t)pow(2, (uint32_t)attachment.samples),
+			.load_op = webgpu_load_op_from_rd(attachment.load_op),
+			.store_op = webgpu_store_op_from_rd(attachment.store_op),
+			.stencil_load_op = webgpu_load_op_from_rd(attachment.stencil_load_op),
+			.stencil_store_op = webgpu_store_op_from_rd(attachment.stencil_store_op),
+			.is_depth_stencil = is_depth_stencil,
+			.is_depth_stencil_read_only = is_depth_stencil_read_only
+		};
+		render_pass_info->attachments.push_back(attachment_info);
+	}
+
+	render_pass_info->view_count = p_view_count;
+
+	return RenderPassID(render_pass_info);
+}
+void RenderingDeviceDriverWebGpu::render_pass_free(RenderPassID p_render_pass) {
+	RenderPassInfo *render_pass_info = (RenderPassInfo *)p_render_pass.id;
+	VersatileResource::free(resources_allocator, render_pass_info);
+}
+
+// ----- COMMANDS -----
+
+void RenderingDeviceDriverWebGpu::command_begin_render_pass(CommandBufferID p_cmd_buffer, RenderPassID p_render_pass, FramebufferID p_framebuffer, CommandBufferType p_cmd_buffer_type, const Rect2i &p_rect, VectorView<RenderPassClearValue> p_clear_values) {
+	DEV_ASSERT(p_cmd_buffer.id != 0);
+	CommandBufferInfo *command_buffer_info = (CommandBufferInfo *)p_cmd_buffer.id;
+	DEV_ASSERT(command_buffer_info->encoder != nullptr);
+
+	Vector<WGPURenderPassColorAttachment> color_attachments;
+
+	RenderPassInfo *render_pass_info = (RenderPassInfo *)p_render_pass.id;
+	FramebufferInfo *framebuffer_info = (FramebufferInfo *)p_framebuffer.id;
+
+	// DEV_ASSERT(render_pass_info->attachments.size() == framebuffer_info->attachments.size());
+
+	WGPUTextureView maybe_surface_texture_view = nullptr;
+	Pair<WGPURenderPassDepthStencilAttachment, bool> maybe_depth_stencil_attachment = Pair((WGPURenderPassDepthStencilAttachment){}, false);
+
+	for (uint32_t i = 0; i < render_pass_info->attachments.size(); i++) {
+		RenderPassAttachmentInfo attachment = render_pass_info->attachments[i];
+
+		if (attachment.is_depth_stencil || attachment.is_depth_stencil_read_only) {
+			TextureID attachment_texture_id = framebuffer_info->attachments[i];
+			TextureInfo *attachment_texture = (TextureInfo *)attachment_texture_id.id;
+			maybe_depth_stencil_attachment.first = (WGPURenderPassDepthStencilAttachment){
+				.view = attachment_texture->view,
+				.depthLoadOp = attachment.load_op,
+				.depthStoreOp = attachment.store_op,
+				.depthClearValue = p_clear_values[i].depth,
+				.depthReadOnly = attachment.is_depth_stencil_read_only,
+				.stencilLoadOp = attachment.stencil_load_op,
+				.stencilStoreOp = attachment.stencil_store_op,
+				.stencilClearValue = p_clear_values[i].stencil,
+				.stencilReadOnly = attachment.is_depth_stencil_read_only,
+			};
+			maybe_depth_stencil_attachment.second = true;
+		} else {
+			WGPUTextureView view;
+			if (framebuffer_info->maybe_swapchain) {
+				SwapChainInfo *swapchain_info = (SwapChainInfo *)framebuffer_info->maybe_swapchain.id;
+				RenderingContextDriverWebGpu::Surface *surface = (RenderingContextDriverWebGpu::Surface *)swapchain_info->surface;
+
+				WGPUSurfaceTexture surface_texture;
+				wgpuSurfaceGetCurrentTexture(surface->surface, &surface_texture);
+
+				WGPUTextureView surface_texture_view = wgpuTextureCreateView(surface_texture.texture, nullptr);
+				maybe_surface_texture_view = surface_texture_view;
+
+				view = surface_texture_view;
+			} else {
+				TextureID attachment_texture_id = framebuffer_info->attachments[i];
+				TextureInfo *attachment_texture = (TextureInfo *)attachment_texture_id.id;
+				view = attachment_texture->view;
+			}
+
+			color_attachments.push_back((WGPURenderPassColorAttachment){
+					.view = view,
+					.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED,
+					.loadOp = attachment.load_op,
+					.storeOp = attachment.store_op,
+					.clearValue = (WGPUColor){
+							.r = p_clear_values[i].color.r,
+							.g = p_clear_values[i].color.g,
+							.b = p_clear_values[i].color.b,
+							.a = p_clear_values[i].color.a,
+					},
+			});
+		}
+
+		command_buffer_info->active_render_pass_info = (RenderPassEncoderInfo){
+			.color_attachments = color_attachments,
+			.depth_stencil_attachment = maybe_depth_stencil_attachment,
+			.maybe_surface_texture_view = maybe_surface_texture_view,
+		};
+		command_buffer_info->is_render_pass_active = true;
+	}
+}
+
+void RenderingDeviceDriverWebGpu::command_end_render_pass(CommandBufferID p_cmd_buffer) {
+	DEV_ASSERT(p_cmd_buffer.id != 0);
+	CommandBufferInfo *command_buffer_info = (CommandBufferInfo *)p_cmd_buffer.id;
+	DEV_ASSERT(command_buffer_info->encoder != nullptr);
+	DEV_ASSERT(command_buffer_info->is_render_pass_active == true);
+
+	// Flush compute pass to preserve ordering.
+	_flush_active_command_pass(*command_buffer_info);
+}
+
+void RenderingDeviceDriverWebGpu::command_next_render_subpass(CommandBufferID _p_cmd_buffer, CommandBufferType _p_cmd_buffer_type) {
+	// Empty.
+}
+
+void RenderingDeviceDriverWebGpu::command_render_set_viewport(CommandBufferID p_cmd_buffer, VectorView<Rect2i> p_viewports) {
+	DEV_ASSERT(p_cmd_buffer.id != 0);
+	CommandBufferInfo *command_buffer_info = (CommandBufferInfo *)p_cmd_buffer.id;
+	DEV_ASSERT(command_buffer_info->encoder != nullptr);
+	DEV_ASSERT(command_buffer_info->is_render_pass_active == true);
+
+	ERR_FAIL_COND_MSG(p_viewports.size() != 1, "WebGpu cannot set multiple viewports.");
+
+	for (uint32_t i = 0; i < p_viewports.size(); i++) {
+		command_buffer_info->commands.push_back(((PassEncoderCommand){
+				.type = PassEncoderCommand::CommandType::RENDER_SET_VIEWPORT,
+				.render_set_viewport = (PassEncoderCommand::RenderSetViewport){
+						.x = (float)p_viewports[i].position.x,
+						.y = (float)p_viewports[i].position.y,
+						.width = (float)p_viewports[i].size.x,
+						.height = (float)p_viewports[i].size.y,
+						.min_depth = 0.0,
+						.max_depth = 1.0,
+				},
+		}));
+	}
+}
+
+void RenderingDeviceDriverWebGpu::command_render_set_scissor(CommandBufferID p_cmd_buffer, VectorView<Rect2i> p_scissors) {
+	DEV_ASSERT(p_cmd_buffer.id != 0);
+	CommandBufferInfo *command_buffer_info = (CommandBufferInfo *)p_cmd_buffer.id;
+	DEV_ASSERT(command_buffer_info->encoder != nullptr);
+	DEV_ASSERT(command_buffer_info->is_render_pass_active == true);
+
+	ERR_FAIL_COND_MSG(p_scissors.size() != 1, "WebGpu cannot set multiple scissors.");
+
+	for (uint32_t i = 0; i < p_scissors.size(); i++) {
+		command_buffer_info->commands.push_back(((PassEncoderCommand){
+				.type = PassEncoderCommand::CommandType::RENDER_SET_SCISSOR_RECT,
+				.render_set_scissor_rect = (PassEncoderCommand::RenderSetScissorRect){
+						.x = (uint32_t)p_scissors[i].position.x,
+						.y = (uint32_t)p_scissors[i].position.y,
+						.width = (uint32_t)p_scissors[i].size.width,
+						.height = (uint32_t)p_scissors[i].size.height,
+				},
+		}));
+	}
+}
+
+void RenderingDeviceDriverWebGpu::command_render_clear_attachments(CommandBufferID _p_cmd_buffer, VectorView<AttachmentClear> p_attachment_clears, VectorView<Rect2i> p_rects) {
+	// NOTE: No easy support.
+	// CRASH_NOW_MSG("NOT SUPPORTED?");
+}
+
+// Binding.
+void RenderingDeviceDriverWebGpu::command_bind_render_pipeline(CommandBufferID p_cmd_buffer, PipelineID p_pipeline) {
+	DEV_ASSERT(p_cmd_buffer.id != 0);
+	CommandBufferInfo *command_buffer_info = (CommandBufferInfo *)p_cmd_buffer.id;
+	DEV_ASSERT(command_buffer_info->encoder != nullptr);
+	DEV_ASSERT(command_buffer_info->is_render_pass_active == true);
+
+	PipelineInfo *pipeline_info = (PipelineInfo *)p_pipeline.id;
+
+	command_buffer_info->commands.push_back(((PassEncoderCommand){
+			.type = PassEncoderCommand::CommandType::RENDER_SET_PIPELINE,
+
+			.set_pipeline = (PassEncoderCommand::SetPipeline){
+					.pipeline_info = pipeline_info,
+			} }));
+}
+
+void RenderingDeviceDriverWebGpu::command_bind_render_uniform_set(CommandBufferID p_cmd_buffer, UniformSetID p_uniform_set, ShaderID p_shader, uint32_t p_set_index) {
+	DEV_ASSERT(p_cmd_buffer.id != 0);
+	CommandBufferInfo *command_buffer_info = (CommandBufferInfo *)p_cmd_buffer.id;
+	DEV_ASSERT(command_buffer_info->encoder != nullptr);
+	DEV_ASSERT(command_buffer_info->is_render_pass_active == true);
+
+	UniformSetInfo *usi = (UniformSetInfo *)p_uniform_set.id;
+	WGPUBindGroup bind_group = usi->bind_group;
+	ShaderInfo *shader_info = (ShaderInfo *)p_shader.id;
+
+	command_buffer_info->commands.push_back(((PassEncoderCommand){
+			.type = PassEncoderCommand::CommandType::RENDER_SET_BIND_GROUP,
+
+			.set_bind_group = (PassEncoderCommand::SetBindGroup){
+					.group_index = p_set_index,
+					.bind_group = bind_group,
+					.shader_info = shader_info,
+			} }));
+}
+
+void RenderingDeviceDriverWebGpu::command_bind_render_uniform_sets(CommandBufferID p_cmd_buffer, VectorView<UniformSetID> p_uniform_sets, ShaderID p_shader, uint32_t p_first_set_index, uint32_t p_set_count, uint32_t p_dynamic_offsets) {
+	for (uint32_t i = 0; i < p_set_count; i++) {
+		command_bind_render_uniform_set(p_cmd_buffer, p_uniform_sets[i], p_shader, p_first_set_index + i);
+	}
+}
+
+// Drawing.
+void RenderingDeviceDriverWebGpu::command_render_draw(CommandBufferID p_cmd_buffer, uint32_t p_vertex_count, uint32_t p_instance_count, uint32_t p_base_vertex, uint32_t p_first_instance) {
+	DEV_ASSERT(p_cmd_buffer.id != 0);
+	CommandBufferInfo *command_buffer_info = (CommandBufferInfo *)p_cmd_buffer.id;
+	DEV_ASSERT(command_buffer_info->encoder != nullptr);
+	DEV_ASSERT(command_buffer_info->is_render_pass_active == true);
+
+	command_buffer_info->commands.push_back(((PassEncoderCommand){
+			.type = PassEncoderCommand::CommandType::RENDER_DRAW,
+			.render_draw = (PassEncoderCommand::RenderDraw){
+					.vertex_count = p_vertex_count,
+					.instance_count = p_instance_count,
+					.first_vertex = p_base_vertex,
+					.first_instance = p_first_instance,
+			},
+	}));
+}
+
+void RenderingDeviceDriverWebGpu::command_render_draw_indexed(CommandBufferID p_cmd_buffer, uint32_t p_index_count, uint32_t p_instance_count, uint32_t p_first_index, int32_t p_vertex_offset, uint32_t p_first_instance) {
+	DEV_ASSERT(p_cmd_buffer.id != 0);
+	CommandBufferInfo *command_buffer_info = (CommandBufferInfo *)p_cmd_buffer.id;
+	DEV_ASSERT(command_buffer_info->encoder != nullptr);
+	DEV_ASSERT(command_buffer_info->is_render_pass_active == true);
+
+	command_buffer_info->commands.push_back(((PassEncoderCommand){
+			.type = PassEncoderCommand::CommandType::RENDER_DRAW_INDEXED,
+			.render_draw_indexed = (PassEncoderCommand::RenderDrawIndexed){
+					.index_count = p_index_count,
+					.instance_count = p_instance_count,
+					.first_index = p_first_index,
+					.base_vertex = p_vertex_offset,
+					.first_instance = p_first_instance,
+			} }));
+}
+
+void RenderingDeviceDriverWebGpu::command_render_draw_indirect(CommandBufferID p_cmd_buffer, BufferID p_indirect_buffer, uint64_t p_offset, uint32_t p_draw_count, uint32_t _p_stride) {
+	DEV_ASSERT(p_cmd_buffer.id != 0);
+	CommandBufferInfo *command_buffer_info = (CommandBufferInfo *)p_cmd_buffer.id;
+	DEV_ASSERT(command_buffer_info->encoder != nullptr);
+	DEV_ASSERT(command_buffer_info->is_render_pass_active == true);
+
+	BufferInfo *indirect_buffer = (BufferInfo *)p_indirect_buffer.id;
+
+	command_buffer_info->commands.push_back(((PassEncoderCommand){
+			.type = PassEncoderCommand::CommandType::RENDER_MULTI_DRAW_INDIRECT,
+			.render_multi_draw_indirect = (PassEncoderCommand::RenderMultiDrawIndirect){
+					.indirect_buffer = indirect_buffer->buffer,
+					.indirect_offset = p_offset,
+					.count = p_draw_count },
+	}));
+}
+
+void RenderingDeviceDriverWebGpu::command_render_draw_indirect_count(CommandBufferID p_cmd_buffer, BufferID p_indirect_buffer, uint64_t p_offset, BufferID p_count_buffer, uint64_t p_count_buffer_offset, uint32_t p_max_draw_count, uint32_t _p_stride) {
+	DEV_ASSERT(p_cmd_buffer.id != 0);
+	CommandBufferInfo *command_buffer_info = (CommandBufferInfo *)p_cmd_buffer.id;
+	DEV_ASSERT(command_buffer_info->encoder != nullptr);
+	DEV_ASSERT(command_buffer_info->is_render_pass_active == true);
+
+	BufferInfo *indirect_buffer = (BufferInfo *)p_indirect_buffer.id;
+	BufferInfo *count_buffer = (BufferInfo *)p_count_buffer.id;
+
+	command_buffer_info->commands.push_back(((PassEncoderCommand){
+			.type = PassEncoderCommand::CommandType::RENDER_MULTI_DRAW_INDIRECT_COUNT,
+			.render_multi_draw_indirect_count = (PassEncoderCommand::RenderMultiDrawIndirectCount){
+					.indirect_buffer = indirect_buffer->buffer,
+					.indirect_offset = p_offset,
+					.count_buffer = count_buffer->buffer,
+					.count_offset = p_count_buffer_offset,
+					.max_count = p_max_draw_count,
+
+			},
+	}));
+}
+
+void RenderingDeviceDriverWebGpu::command_render_draw_indexed_indirect(CommandBufferID p_cmd_buffer, BufferID p_indirect_buffer, uint64_t p_offset, uint32_t p_draw_count, uint32_t _p_stride) {
+	DEV_ASSERT(p_cmd_buffer.id != 0);
+	CommandBufferInfo *command_buffer_info = (CommandBufferInfo *)p_cmd_buffer.id;
+	DEV_ASSERT(command_buffer_info->encoder != nullptr);
+	DEV_ASSERT(command_buffer_info->is_render_pass_active == true);
+
+	BufferInfo *indirect_buffer = (BufferInfo *)p_indirect_buffer.id;
+
+	command_buffer_info->commands.push_back(((PassEncoderCommand){
+			.type = PassEncoderCommand::CommandType::RENDER_MULTI_DRAW_INDEXED_INDIRECT,
+			.render_multi_draw_indexed_indirect = (PassEncoderCommand::RenderMultiDrawIndexedIndirect){
+					.indirect_buffer = indirect_buffer->buffer,
+					.indirect_offset = p_offset,
+					.count = p_draw_count },
+	}));
+}
+
+void RenderingDeviceDriverWebGpu::command_render_draw_indexed_indirect_count(CommandBufferID p_cmd_buffer, BufferID p_indirect_buffer, uint64_t p_offset, BufferID p_count_buffer, uint64_t p_count_buffer_offset, uint32_t p_max_draw_count, uint32_t _p_stride) {
+	DEV_ASSERT(p_cmd_buffer.id != 0);
+	CommandBufferInfo *command_buffer_info = (CommandBufferInfo *)p_cmd_buffer.id;
+	DEV_ASSERT(command_buffer_info->encoder != nullptr);
+	DEV_ASSERT(command_buffer_info->is_render_pass_active == true);
+
+	BufferInfo *indirect_buffer = (BufferInfo *)p_indirect_buffer.id;
+	BufferInfo *count_buffer = (BufferInfo *)p_count_buffer.id;
+
+	command_buffer_info->commands.push_back(((PassEncoderCommand){
+			.type = PassEncoderCommand::CommandType::RENDER_MULTI_DRAW_INDEXED_INDIRECT_COUNT,
+			.render_multi_draw_indexed_indirect_count = (PassEncoderCommand::RenderMultiDrawIndexedIndirectCount){
+					.indirect_buffer = indirect_buffer->buffer,
+					.indirect_offset = p_offset,
+					.count_buffer = count_buffer->buffer,
+					.count_offset = p_count_buffer_offset,
+					.max_count = p_max_draw_count,
+			} }));
+}
+
+// Buffer binding.
+void RenderingDeviceDriverWebGpu::command_render_bind_vertex_buffers(CommandBufferID p_cmd_buffer, uint32_t p_binding_count, const BufferID *p_buffers, const uint64_t *p_offsets, uint64_t p_dynamic_offsets) {
+	DEV_ASSERT(p_cmd_buffer.id != 0);
+	CommandBufferInfo *command_buffer_info = (CommandBufferInfo *)p_cmd_buffer.id;
+	DEV_ASSERT(command_buffer_info->encoder != nullptr);
+	DEV_ASSERT(command_buffer_info->is_render_pass_active == true);
+
+	COLOR_PRINT("blue", "command_render_bind_vertex_buffers slots: " + itos(p_binding_count));
+
+	for (uint32_t i = 0; i < p_binding_count; i++) {
+		BufferInfo *buffer_info = (BufferInfo *)p_buffers[i].id;
+		COLOR_PRINT("blue", "command_render_bind_vertex_buffers buffer size: " + itos(buffer_info->size));
+		COLOR_PRINT("blue", "command_render_bind_vertex_buffers buffer offset: " + itos(p_offsets[i]));
+
+		uint32_t dynamic_offset = 0;
+		if (buffer_info->is_dynamic()) {
+			uint64_t buffer_frame_idx = p_dynamic_offsets & 0x3; // Assuming max 4 frames.
+			p_dynamic_offsets >>= 2;
+			dynamic_offset = buffer_frame_idx * buffer_info->size;
+
+			COLOR_PRINT("blue", "command_render_bind_vertex_buffers dynamic_offset: " + itos(dynamic_offset));
+		}
+
+		command_buffer_info->commands.push_back(((PassEncoderCommand){
+				.type = PassEncoderCommand::CommandType::RENDER_SET_VERTEX_BUFFER,
+				.render_set_vertex_buffer = (PassEncoderCommand::RenderSetVertexBuffer){
+						.slot = i,
+						.buffer = buffer_info->buffer,
+						.offset = p_offsets[i] + dynamic_offset,
+						.size = buffer_info->size - p_offsets[i], // TODO: review - d3d12 does this, too. But doesn't math in my head...
+				},
+		}));
+	}
+}
+
+void RenderingDeviceDriverWebGpu::command_render_bind_index_buffer(CommandBufferID p_cmd_buffer, BufferID p_buffer, IndexBufferFormat p_format, uint64_t p_offset) {
+	DEV_ASSERT(p_cmd_buffer.id != 0);
+	CommandBufferInfo *command_buffer_info = (CommandBufferInfo *)p_cmd_buffer.id;
+	DEV_ASSERT(command_buffer_info->encoder != nullptr);
+	DEV_ASSERT(command_buffer_info->is_render_pass_active == true);
+
+	BufferInfo *buffer_info = (BufferInfo *)p_buffer.id;
+
+	WGPUIndexFormat format = WGPUIndexFormat_Undefined;
+	switch (p_format) {
+		case RenderingDeviceCommons::INDEX_BUFFER_FORMAT_UINT16:
+			format = WGPUIndexFormat_Uint16;
+			break;
+		case RenderingDeviceCommons::INDEX_BUFFER_FORMAT_UINT32:
+			format = WGPUIndexFormat_Uint32;
+			break;
+	}
+
+	command_buffer_info->commands.push_back(((PassEncoderCommand){
+			.type = PassEncoderCommand::CommandType::RENDER_SET_INDEX_BUFFER,
+			.render_set_index_buffer = (PassEncoderCommand::RenderSetIndexBuffer){
+					.buffer = buffer_info->buffer,
+					.format = format,
+					.offset = p_offset,
+					.size = buffer_info->size,
+			} }));
+}
+
+// Dynamic state.
+void RenderingDeviceDriverWebGpu::command_render_set_blend_constants(CommandBufferID p_cmd_buffer, const Color &p_constants) {
+	DEV_ASSERT(p_cmd_buffer.id != 0);
+	CommandBufferInfo *command_buffer_info = (CommandBufferInfo *)p_cmd_buffer.id;
+	DEV_ASSERT(command_buffer_info->encoder != nullptr);
+	DEV_ASSERT(command_buffer_info->is_render_pass_active == true);
+
+	command_buffer_info->commands.push_back(((PassEncoderCommand){
+			.type = PassEncoderCommand::CommandType::RENDER_SET_BLEND_CONSTANTS,
+			.render_set_blend_constant = (PassEncoderCommand::RenderSetBlendConstant){
+					.color = (WGPUColor){
+							.r = p_constants.r,
+							.g = p_constants.b,
+							.b = p_constants.b,
+							.a = p_constants.a,
+					} },
+	}));
+}
+
+void RenderingDeviceDriverWebGpu::command_render_set_line_width(CommandBufferID p_cmd_buffer, float p_width) {
+	// Note: This functionality is unsupported.
+	// Empty.
+}
+
+// ----- PIPELINE -----
+
+Vector<WGPUConstantEntry> RenderingDeviceDriverWebGpu::_get_specialization_constant_entries(const VectorView<PipelineSpecializationConstant> &p_specialization_constants, const HashMap<uint32_t, CharString> &p_override_layout) {
+	Vector<WGPUConstantEntry> overrides;
+	for (uint32_t i = 0; i < p_specialization_constants.size(); i++) {
+		const PipelineSpecializationConstant &constant = p_specialization_constants.ptr()[i];
+		if (p_override_layout.has(constant.constant_id)) {
+			const CharString &name = p_override_layout.get(constant.constant_id);
+			double value;
+			if (constant.type == PipelineSpecializationConstantType::PIPELINE_SPECIALIZATION_CONSTANT_TYPE_FLOAT) {
+				value = (double)constant.float_value;
+			} else if (constant.type == PipelineSpecializationConstantType::PIPELINE_SPECIALIZATION_CONSTANT_TYPE_INT) {
+				value = (double)constant.int_value;
+			} else {
+				value = (double)constant.bool_value;
+			}
+			overrides.push_back((WGPUConstantEntry){
+					.key = (WGPUStringView){
+							.data = name.ptr(),
+							.length = (size_t)name.size(),
+					},
+					.value = value,
+			});
+		}
+	}
+	return overrides;
+}
+
+RenderingDeviceDriver::PipelineID RenderingDeviceDriverWebGpu::render_pipeline_create(
+		ShaderID p_shader,
+		VertexFormatID p_vertex_format,
+		RenderPrimitive p_render_primitive,
+		PipelineRasterizationState p_rasterization_state,
+		PipelineMultisampleState p_multisample_state,
+		PipelineDepthStencilState p_depth_stencil_state,
+		PipelineColorBlendState p_blend_state,
+		VectorView<int32_t> p_color_attachments,
+		BitField<PipelineDynamicStateFlags> p_dynamic_state,
+		RenderPassID p_render_pass,
+		uint32_t p_render_subpass,
+		VectorView<PipelineSpecializationConstant> p_specialization_constants) {
+	ShaderInfo *shader_info = (ShaderInfo *)p_shader.id;
+	WGPURenderPipelineDescriptor pipeline_descriptor{};
+
+	Vector<uint8_t> s_name = shader_info->shader_name.to_ascii_buffer();
+	pipeline_descriptor.label = WGPUStringView{.data = (char *)s_name.ptr(), .length = (size_t)s_name.size()};
+
+	// pipeline_descriptor.layout
+	pipeline_descriptor.layout = shader_info->pipeline_layout;
+
+	// pipeline_descriptor.vertex
+	Vector<WGPUConstantEntry> vertex_overrides = _get_specialization_constant_entries(p_specialization_constants, shader_info->vertex_override_layout);
+	WGPUVertexState vertex_state = (WGPUVertexState){
+		.module = shader_info->vertex_shader,
+		.entryPoint = { "main", 4 },
+		.constantCount = (size_t)vertex_overrides.size(),
+		.constants = vertex_overrides.ptr(),
+		.bufferCount = 0,
+	};
+
+	// NOTE: I'm not sure dynamic vertex state is supported.
+	if (p_vertex_format) {
+		VertexFormatInfo *format_info = (VertexFormatInfo *)p_vertex_format.id;
+		vertex_state.buffers = format_info->layouts.ptr();
+		vertex_state.bufferCount = format_info->layouts.size();
+		COLOR_PRINT("blue", shader_info->shader_name + " vertex buffers: " + itos(format_info->layouts.size()));
+	}
+
+	pipeline_descriptor.vertex = vertex_state;
+
+	// pipeline_descriptor.fragment
+	WGPUColorTargetState *targets = ALLOCA_ARRAY(WGPUColorTargetState, p_color_attachments.size());
+	size_t targets_count = 0;
+
+	RenderPassInfo *render_pass_info = (RenderPassInfo *)p_render_pass.id;
+	uint32_t render_pass_attachments_offset = 0;
+
+	for (uint32_t i = 0; i < p_color_attachments.size(); i++) {
+		if (p_color_attachments[i] != ATTACHMENT_UNUSED) {
+			const PipelineColorBlendState::Attachment attachment = p_blend_state.attachments[i];
+			WGPUBlendState *blend_state = ALLOCA_SINGLE(WGPUBlendState);
+			*blend_state = (WGPUBlendState){
+				.color =
+						(WGPUBlendComponent){
+								.operation = webgpu_blend_operation_from_rd(attachment.color_blend_op),
+								.srcFactor = webgpu_blend_factor_from_rd(attachment.src_color_blend_factor),
+								.dstFactor = webgpu_blend_factor_from_rd(attachment.dst_color_blend_factor),
+						},
+				.alpha =
+						(WGPUBlendComponent){
+								.operation = webgpu_blend_operation_from_rd(attachment.alpha_blend_op),
+								.srcFactor = webgpu_blend_factor_from_rd(attachment.src_alpha_blend_factor),
+								.dstFactor = webgpu_blend_factor_from_rd(attachment.dst_alpha_blend_factor),
+						},
+			};
+
+			uint32_t write_mask = WGPUColorWriteMask_None;
+			if (attachment.write_r) {
+				write_mask |= WGPUColorWriteMask_Red;
+			}
+			if (attachment.write_g) {
+				write_mask |= WGPUColorWriteMask_Green;
+			}
+			if (attachment.write_b) {
+				write_mask |= WGPUColorWriteMask_Blue;
+			}
+			if (attachment.write_a) {
+				write_mask |= WGPUColorWriteMask_Alpha;
+			}
+
+			targets[targets_count] = (WGPUColorTargetState){
+				// TODO: We do not have info on color target format.
+				.format = render_pass_info->attachments[i + render_pass_attachments_offset].format,
+				.blend = attachment.enable_blend ? blend_state : nullptr,
+				.writeMask = write_mask,
+			};
+			targets_count++;
+		} else {
+			render_pass_attachments_offset += 1;
+		}
+	}
+
+	Vector<WGPUConstantEntry> fragment_overrides = _get_specialization_constant_entries(p_specialization_constants, shader_info->fragment_override_layout);
+	WGPUFragmentState fragment_state = (WGPUFragmentState){
+		.module = shader_info->fragment_shader,
+		.entryPoint = { "main", 4 },
+		.constantCount = (size_t)fragment_overrides.size(),
+		.constants = fragment_overrides.ptr(),
+		.targetCount = p_color_attachments.size() - render_pass_attachments_offset,
+		.targets = targets,
+	};
+	pipeline_descriptor.fragment = &fragment_state;
+
+	// pipeline_descriptor.primitive
+	// NOTE: We will default to `WGPUPrimitiveTopology_PointList` since not all topologies are supported.
+	WGPUPrimitiveTopology topology;
+	switch (p_render_primitive) {
+		case RenderingDeviceCommons::RENDER_PRIMITIVE_POINTS:
+			topology = WGPUPrimitiveTopology_PointList;
+			break;
+		case RenderingDeviceCommons::RENDER_PRIMITIVE_LINES:
+			topology = WGPUPrimitiveTopology_LineList;
+			break;
+		case RenderingDeviceCommons::RENDER_PRIMITIVE_LINESTRIPS:
+			topology = WGPUPrimitiveTopology_LineStrip;
+			break;
+		case RenderingDeviceCommons::RENDER_PRIMITIVE_TRIANGLES:
+			topology = WGPUPrimitiveTopology_TriangleList;
+			break;
+		case RenderingDeviceCommons::RENDER_PRIMITIVE_TRIANGLE_STRIPS:
+			topology = WGPUPrimitiveTopology_TriangleStrip;
+			break;
+		default:
+			topology = WGPUPrimitiveTopology_PointList;
+			break;
+	}
+
+	WGPUFrontFace front_face;
+	switch (p_rasterization_state.front_face) {
+		case RenderingDeviceCommons::POLYGON_FRONT_FACE_CLOCKWISE:
+			front_face = WGPUFrontFace_CW;
+			break;
+		case RenderingDeviceCommons::POLYGON_FRONT_FACE_COUNTER_CLOCKWISE:
+			front_face = WGPUFrontFace_CCW;
+			break;
+	}
+
+	WGPUCullMode cull_mode = WGPUCullMode_None;
+	switch (p_rasterization_state.cull_mode) {
+		case RenderingDeviceCommons::POLYGON_CULL_FRONT:
+			cull_mode = WGPUCullMode_Front;
+			break;
+		case RenderingDeviceCommons::POLYGON_CULL_BACK:
+			cull_mode = WGPUCullMode_Back;
+			break;
+		case RenderingDeviceCommons::POLYGON_CULL_DISABLED:
+		case RenderingDeviceCommons::POLYGON_CULL_MAX:
+			break;
+	}
+
+	WGPUPrimitiveState primitive_state = (WGPUPrimitiveState){
+		.topology = topology,
+		// TODO: We need this for primitive restart but currently cannot know the proper value.
+		.stripIndexFormat = WGPUIndexFormat_Undefined,
+		.frontFace = front_face,
+		.cullMode = cull_mode,
+		// TODO Consider implementing wireframe rendering (required native feature).
+		// TODO Consider implementing `p_rasterization_state.enable_depth_clamp` (required native feature).
+
+	};
+	pipeline_descriptor.primitive = primitive_state;
+
+	// pipeline_descriptor.depth_stencil
+	WGPUDepthStencilState depth_stencil_state;
+
+	const RenderPassAttachmentInfo *depth_attachment = render_pass_info->get_depth_attachment();
+	if (depth_attachment) {
+		depth_stencil_state = (WGPUDepthStencilState){
+			.format = depth_attachment->format,
+			.depthWriteEnabled = p_depth_stencil_state.enable_depth_write ? WGPUOptionalBool_True : WGPUOptionalBool_False,
+			.depthCompare = webgpu_compare_mode_from_rd(p_depth_stencil_state.depth_compare_operator),
+			.stencilFront =
+					(WGPUStencilFaceState){
+							.compare = webgpu_compare_mode_from_rd(p_depth_stencil_state.front_op.compare),
+							.failOp = webgpu_stencil_operation_from_rd(p_depth_stencil_state.front_op.fail),
+							.depthFailOp = webgpu_stencil_operation_from_rd(p_depth_stencil_state.front_op.depth_fail),
+							.passOp = webgpu_stencil_operation_from_rd(p_depth_stencil_state.front_op.pass),
+					},
+			.stencilBack =
+					(WGPUStencilFaceState){
+							.compare = webgpu_compare_mode_from_rd(p_depth_stencil_state.back_op.compare),
+							.failOp = webgpu_stencil_operation_from_rd(p_depth_stencil_state.back_op.fail),
+							.depthFailOp = webgpu_stencil_operation_from_rd(p_depth_stencil_state.back_op.depth_fail),
+							.passOp = webgpu_stencil_operation_from_rd(p_depth_stencil_state.back_op.pass),
+					},
+			// NOTE: We assume stencil read masks are the same for both front and back.
+			// This is how wgpu does it, see https://github.com/gfx-rs/wgpu/blob/6405dcf611a336eb7d3bf9de7b78d7d0b3d3b48d/wgpu-hal/src/vulkan/device.rs#L1778
+			.stencilReadMask = p_depth_stencil_state.front_op.compare_mask,
+			.stencilWriteMask = p_depth_stencil_state.front_op.write_mask,
+			.depthBias = (int32_t)p_rasterization_state.depth_bias_constant_factor,
+			.depthBiasSlopeScale = p_rasterization_state.depth_bias_slope_factor,
+			.depthBiasClamp = p_rasterization_state.depth_bias_clamp,
+		};
+		pipeline_descriptor.depthStencil = &depth_stencil_state;
+	} else {
+		pipeline_descriptor.depthStencil = nullptr;
+	}
+
+	// pipeline_descriptor.multisample
+	// NOTE: In a future version of wgpu, multisample.mask will be `u64`.
+	static_assert(sizeof(WGPUMultisampleState) == 24);
+	// TODO: Assert that p_format.samples follows this behavior.
+	uint32_t sample_count = pow(2, (uint32_t)p_multisample_state.sample_count);
+	pipeline_descriptor.multisample = (WGPUMultisampleState){
+		.count = sample_count,
+		.mask = p_multisample_state.sample_mask.size() ? *p_multisample_state.sample_mask.ptr() : ~0,
+		.alphaToCoverageEnabled = p_multisample_state.enable_alpha_to_coverage,
+	};
+
+	// pipeline_descriptor.multiview
+	// TODO: Implement render pipeline multiview.
+
+	WGPURenderPipeline render_pipeline = wgpuDeviceCreateRenderPipeline(device, &pipeline_descriptor);
+	ERR_FAIL_COND_V(!render_pipeline, PipelineID());
+
+	PipelineInfo *pipeline_info = memnew(PipelineInfo);
+	pipeline_info->type = PipelineInfo::PipelineType::RENDER;
+	pipeline_info->render_pipeline = render_pipeline;
+	pipeline_info->render_pipeline_desc = pipeline_descriptor;
+	pipeline_info->shader_id = p_shader;
+
+	return PipelineID(pipeline_info);
+}
+
+/*****************/
+/**** COMPUTE ****/
+/*****************/
+
+// ----- COMMANDS -----
+
+// Binding.
+void RenderingDeviceDriverWebGpu::command_bind_compute_pipeline(CommandBufferID p_cmd_buffer, PipelineID p_pipeline) {
+	DEV_ASSERT(p_cmd_buffer.id != 0);
+	CommandBufferInfo *command_buffer_info = (CommandBufferInfo *)p_cmd_buffer.id;
+	DEV_ASSERT(command_buffer_info->encoder != nullptr);
+
+	PipelineInfo *pipeline = (PipelineInfo *)p_pipeline.id;
+
+	command_buffer_info->commands.push_back((PassEncoderCommand){
+			.type = PassEncoderCommand::CommandType::COMPUTE_SET_PIPELINE,
+			.set_pipeline = (PassEncoderCommand::SetPipeline){
+					.pipeline_info = pipeline,
+			} });
+}
+void RenderingDeviceDriverWebGpu::command_bind_compute_uniform_set(CommandBufferID p_cmd_buffer, UniformSetID p_uniform_set, ShaderID p_shader, uint32_t p_set_index) {
+	DEV_ASSERT(p_cmd_buffer.id != 0);
+	CommandBufferInfo *command_buffer_info = (CommandBufferInfo *)p_cmd_buffer.id;
+	DEV_ASSERT(command_buffer_info->encoder != nullptr);
+
+	UniformSetInfo *usi = (UniformSetInfo *)p_uniform_set.id;
+	WGPUBindGroup bind_group = usi->bind_group;
+	ShaderInfo *shader_info = (ShaderInfo *)p_shader.id;
+
+	command_buffer_info->has_compute_commands = true;
+	command_buffer_info->commands.push_back((PassEncoderCommand){
+			.type = PassEncoderCommand::CommandType::COMPUTE_SET_BIND_GROUP,
+			.set_bind_group = (PassEncoderCommand::SetBindGroup){
+					.group_index = p_set_index,
+					.bind_group = bind_group,
+					.shader_info = shader_info,
+			},
+	});
+}
+
+void RenderingDeviceDriverWebGpu::command_bind_compute_uniform_sets(CommandBufferID p_cmd_buffer, VectorView<UniformSetID> p_uniform_sets, ShaderID p_shader, uint32_t p_first_set_index, uint32_t p_set_count, uint32_t p_dynamic_offsets) {
+	// TODO: RenderingDeviceDriverWebGpu::command_bind_compute_uniform_sets
+	// CRASH_NOW_MSG("TODO --> command_bind_compute_uniform_sets");
+    // TODO: p_dynamic_offsets
+	for (uint32_t i = 0; i < p_set_count; i++) {
+		command_bind_compute_uniform_set(p_cmd_buffer, p_uniform_sets[i], p_shader, p_first_set_index + i);
+	}
+}
+
+// Dispatching.
+void RenderingDeviceDriverWebGpu::command_compute_dispatch(CommandBufferID p_cmd_buffer, uint32_t p_x_groups, uint32_t p_y_groups, uint32_t p_z_groups) {
+	DEV_ASSERT(p_cmd_buffer.id != 0);
+	CommandBufferInfo *command_buffer_info = (CommandBufferInfo *)p_cmd_buffer.id;
+	DEV_ASSERT(command_buffer_info->encoder != nullptr);
+
+	command_buffer_info->has_compute_commands = true;
+	command_buffer_info->commands.push_back((PassEncoderCommand){
+			.type = PassEncoderCommand::CommandType::COMPUTE_DISPATCH_WORKGROUPS,
+			.compute_dispatch_workgroups = (PassEncoderCommand::ComputeDispatchWorkgroups){
+					.workgroup_count_x = p_x_groups,
+					.workgroup_count_y = p_y_groups,
+					.workgroup_count_z = p_z_groups,
+			},
+	});
+}
+void RenderingDeviceDriverWebGpu::command_compute_dispatch_indirect(CommandBufferID p_cmd_buffer, BufferID p_indirect_buffer, uint64_t p_offset) {
+	DEV_ASSERT(p_cmd_buffer.id != 0);
+	CommandBufferInfo *command_buffer_info = (CommandBufferInfo *)p_cmd_buffer.id;
+	DEV_ASSERT(command_buffer_info->encoder != nullptr);
+
+	BufferInfo *buffer_info = (BufferInfo *)p_indirect_buffer.id;
+
+	command_buffer_info->has_compute_commands = true;
+	command_buffer_info->commands.push_back((PassEncoderCommand){
+			.type = PassEncoderCommand::CommandType::COMPUTE_DISPATCH_WORKGROUPS_INDIRECT,
+			.compute_dispatch_workgroups_indirect = (PassEncoderCommand::ComputeDispatchWorkgroupsIndirect){
+					.indirect_buffer = buffer_info->buffer,
+					.indirect_offset = p_offset,
+			},
+	});
+}
+
+// ----- PIPELINE -----
+
+RenderingDeviceDriver::PipelineID RenderingDeviceDriverWebGpu::compute_pipeline_create(ShaderID p_shader, VectorView<PipelineSpecializationConstant> p_specialization_constants) {
+	ShaderInfo *shader_info = (ShaderInfo *)p_shader.id;
+
+	print_verbose("RenderingDeviceDriverWebGpu::compute_pipeline_create for " + shader_info->shader_name);
+
+	ERR_FAIL_COND_V_MSG(!shader_info->compute_shader, PipelineID(), "Compute pipeline shader null.");
+
+	Vector<WGPUConstantEntry> overrides = _get_specialization_constant_entries(p_specialization_constants, shader_info->compute_override_layout);
+
+	WGPUComputeState programmable_stage_desc{
+		.module = shader_info->compute_shader,
+		.entryPoint = { "main", 4 },
+		.constantCount = (size_t)overrides.size(),
+		.constants = overrides.ptr(),
+	};
+
+	Vector<uint8_t> s_name = shader_info->shader_name.to_ascii_buffer();
+	WGPUComputePipelineDescriptor compute_pipeline_descriptor{
+		.label = WGPUStringView{.data = (char *)s_name.ptr(), .length = (size_t)s_name.size()},
+		.layout = shader_info->pipeline_layout,
+		.compute = programmable_stage_desc,
+	};
+
+	WGPUComputePipeline compute_pipeline = wgpuDeviceCreateComputePipeline(device, &compute_pipeline_descriptor);
+
+	PipelineInfo *pipeline_info = memnew(PipelineInfo);
+	pipeline_info->type = PipelineInfo::PipelineType::COMPUTE;
+	pipeline_info->compute_pipeline = compute_pipeline;
+	pipeline_info->compute_pipeline_desc = compute_pipeline_descriptor;
+	pipeline_info->shader_id = p_shader;
+
+	return PipelineID(pipeline_info);
+}
+
+/********************/
+/**** RAYTRACING ****/
+/********************/
+
+RenderingDeviceDriver::AccelerationStructureID RenderingDeviceDriverWebGpu::blas_create(VectorView<AccelerationStructureGeometry> p_geometries, BitField<AccelerationStructureFlagBits> p_flags) {
+	return AccelerationStructureID();
+}
+
+RenderingDeviceDriverWebGpu::AccelerationStructureID RenderingDeviceDriverWebGpu::tlas_create(uint32_t p_max_instance_count, BitField<AccelerationStructureFlagBits> p_flags) {
+	return AccelerationStructureID();
+}
+
+void RenderingDeviceDriverWebGpu::acceleration_structure_instance_write(uint8_t *r_driver_instance, const RenderingDeviceDriverWebGpu::AccelerationStructureInstance &p_instance) {
+}
+
+void RenderingDeviceDriverWebGpu::acceleration_structure_free(AccelerationStructureID p_acceleration_structure) {
+}
+
+uint32_t RenderingDeviceDriverWebGpu::acceleration_structure_get_scratch_size_bytes(AccelerationStructureID p_acceleration_structure) {
+	return 0;
+}
+
+// --- PIPELINE ---
+
+RenderingDeviceDriver::RaytracingPipelineID RenderingDeviceDriverWebGpu::raytracing_pipeline_create(VectorView<PipelineShader> p_shaders, VectorView<uint32_t> p_raygen_shader_indices, VectorView<uint32_t> p_miss_shader_indices, VectorView<HitGroup> p_hit_groups, uint32_t p_max_trace_recursion_depth, ShaderID p_layout_defining_shader) {
+	return RaytracingPipelineID();
+}
+
+void RenderingDeviceDriverWebGpu::raytracing_pipeline_free(RaytracingPipelineID p_pipeline) {
+}
+
+bool RenderingDeviceDriverWebGpu::raytracing_pipeline_get_shader_group_handles(RaytracingPipelineID p_pipeline, uint32_t p_group_index_offset, VectorView<uint32_t> p_group_indices, uint8_t *r_data, uint32_t p_data_stride_bytes) {
+	return false;
+}
+
+// ----- COMMANDS -----
+
+void RenderingDeviceDriverWebGpu::command_build_blas(CommandBufferID p_cmd_buffer, AccelerationStructureID p_acceleration_structure, BufferID p_scratch_buffer) {
+}
+
+void RenderingDeviceDriverWebGpu::command_build_tlas(CommandBufferID p_cmd_buffer, AccelerationStructureID p_acceleration_structure, BufferID p_scratch_buffer, BufferID p_instance_buffer, uint32_t p_instance_offset, uint32_t p_instance_count) {
+}
+
+void RenderingDeviceDriverWebGpu::command_bind_raytracing_pipeline(CommandBufferID p_cmd_buffer, RaytracingPipelineID p_pipeline) {
+}
+
+void RenderingDeviceDriverWebGpu::command_bind_raytracing_uniform_set(CommandBufferID p_cmd_buffer, UniformSetID p_uniform_set, ShaderID p_shader, uint32_t p_set_index) {
+}
+
+void RenderingDeviceDriverWebGpu::command_trace_rays(CommandBufferID p_cmd_buffer, const ShaderBindingTable &p_raygen_sbt, const ShaderBindingTable &p_miss_sbt, const ShaderBindingTable &p_hit_sbt, uint32_t p_width, uint32_t p_height, uint32_t p_depth) {
+}
+
+/*****************/
+/**** QUERIES ****/
+/*****************/
+
+// ----- TIMESTAMP -----
+
+// Basic.
+RenderingDeviceDriver::QueryPoolID RenderingDeviceDriverWebGpu::timestamp_query_pool_create(uint32_t p_query_count) {
+	// TODO: RenderingDeviceDriverWebGpu::timestamp_query_pool_create
+	return QueryPoolID(1);
+}
+
+void RenderingDeviceDriverWebGpu::timestamp_query_pool_free(QueryPoolID p_pool_id) {
+	// TODO: RenderingDeviceDriverWebGpu::timestamp_query_pool_free
+}
+
+void RenderingDeviceDriverWebGpu::timestamp_query_pool_get_results(QueryPoolID p_pool_id, uint32_t p_query_count, uint64_t *r_results) {
+	// TODO: RenderingDeviceDriverWebGpu::timestamp_query_pool_get_results
+}
+
+uint64_t RenderingDeviceDriverWebGpu::timestamp_query_result_to_time(uint64_t p_result) {
+	// TODO: RenderingDeviceDriverWebGpu::timestamp_query_result_to_time
+	return 1;
+}
+
+// Commands.
+void RenderingDeviceDriverWebGpu::command_timestamp_query_pool_reset(CommandBufferID p_cmd_buffer, QueryPoolID p_pool_id, uint32_t p_query_count) {}
+void RenderingDeviceDriverWebGpu::command_timestamp_write(CommandBufferID p_cmd_buffer, QueryPoolID p_pool_id, uint32_t p_index) {}
+
+/****************/
+/**** LABELS ****/
+/****************/
+
+void RenderingDeviceDriverWebGpu::command_begin_label(CommandBufferID p_cmd_buffer, const char *p_label_name, const Color &p_color) {}
+void RenderingDeviceDriverWebGpu::command_end_label(CommandBufferID p_cmd_buffer) {}
+
+/****************/
+/**** DEBUG *****/
+/****************/
+
+void RenderingDeviceDriverWebGpu::command_insert_breadcrumb(CommandBufferID p_cmd_buffer, uint32_t p_data) {
+	// TODO: RenderingDeviceDriverWebGpu::command_insert_breadcrumb
+	// CRASH_NOW_MSG("TODO --> command_insert_breadcrumb");
+}
+
+/********************/
+/**** SUBMISSION ****/
+/********************/
+
+void RenderingDeviceDriverWebGpu::begin_segment(uint32_t p_frame_index, uint32_t p_frames_drawn) {}
+void RenderingDeviceDriverWebGpu::end_segment() {}
+
+/**************/
+/**** MISC ****/
+/**************/
+
+void RenderingDeviceDriverWebGpu::set_object_name(ObjectType p_type, ID p_driver_id, const String &p_name) {}
+uint64_t RenderingDeviceDriverWebGpu::get_resource_native_handle(DriverResource p_type, ID p_driver_id) {
+	// TODO: RenderingDeviceDriverWebGpu::get_resource_native_handle
+	return 0;
+}
+
+uint64_t RenderingDeviceDriverWebGpu::get_total_memory_used() {
+	// TODO: RenderingDeviceDriverWebGpu::get_total_memory_used
+	return 0;
+}
+
+uint64_t RenderingDeviceDriverWebGpu::get_lazily_memory_used() {
+	// TODO: RenderingDeviceDriverWebGpu::get_lazily_memory_used
+	return 0;
+}
+
+uint64_t RenderingDeviceDriverWebGpu::limit_get(Limit p_limit) {
+	WGPULimits limits;
+	limits.nextInChain = nullptr;
+	wgpuDeviceGetLimits(device, &limits);
+	return rd_limit_from_webgpu(p_limit, limits);
+}
+
+uint64_t RenderingDeviceDriverWebGpu::api_trait_get(ApiTrait p_trait) {
+	switch (p_trait) {
+		case API_TRAIT_TEXTURE_TRANSFER_ALIGNMENT:
+			return 256;
+		case API_TRAIT_HONORS_PIPELINE_BARRIERS:
+			return 0;
+		case API_TRAIT_TEXTURE_DATA_ROW_PITCH_STEP:
+			return 256;
+		default:
+			return RenderingDeviceDriver::api_trait_get(p_trait);
+	}
+}
+
+bool RenderingDeviceDriverWebGpu::has_feature(Features p_feature) {
+	switch (p_feature) {
+		case SUPPORTS_MULTIVIEW:
+		case SUPPORTS_HALF_FLOAT:
+		case SUPPORTS_ATTACHMENT_VRS:
+		case SUPPORTS_METALFX_SPATIAL:
+		case SUPPORTS_METALFX_TEMPORAL:
+		case SUPPORTS_FRAGMENT_SHADER_WITH_ONLY_SIDE_EFFECTS:
+		case SUPPORTS_BUFFER_DEVICE_ADDRESS:
+		case SUPPORTS_IMAGE_ATOMIC_32_BIT:
+		case SUPPORTS_VULKAN_MEMORY_MODEL:
+		case SUPPORTS_FRAMEBUFFER_DEPTH_RESOLVE:
+		case SUPPORTS_POINT_SIZE:
+		case SUPPORTS_RAY_QUERY:
+		case SUPPORTS_RAYTRACING_PIPELINE:
+		case SUPPORTS_HDR_OUTPUT:
+		default:
+			return false;
+	}
+}
+
+const RenderingDeviceDriver::MultiviewCapabilities &RenderingDeviceDriverWebGpu::get_multiview_capabilities() {
+	return multiview_capabilities;
+}
+
+const RenderingDeviceDriver::FragmentShadingRateCapabilities &RenderingDeviceDriverWebGpu::get_fragment_shading_rate_capabilities() {
+	return fsr_capabilities;
+}
+
+const RenderingDeviceDriver::FragmentDensityMapCapabilities &RenderingDeviceDriverWebGpu::get_fragment_density_map_capabilities() {
+	return fdm_capabilities;
+}
+
+String RenderingDeviceDriverWebGpu::get_api_name() const {
+	return "WebGPU";
+}
+
+String RenderingDeviceDriverWebGpu::get_api_version() const {
+	return vformat("%d.%d", capabilities.version_major, capabilities.version_minor);
+}
+
+String RenderingDeviceDriverWebGpu::get_pipeline_cache_uuid() const {
+	return pipeline_cache_id;
+}
+
+const RenderingDeviceDriver::Capabilities &RenderingDeviceDriverWebGpu::get_capabilities() const {
+	return capabilities;
+}
+
+const RenderingShaderContainerFormat &RenderingDeviceDriverWebGpu::get_shader_container_format() const {
+    return shader_container_format;
+}
+
+RenderingDeviceDriverWebGpu::RenderingDeviceDriverWebGpu(RenderingContextDriverWebGpu *p_context_driver) {
+	DEV_ASSERT(p_context_driver != nullptr);
+
+	context_driver = p_context_driver;
+}
+RenderingDeviceDriverWebGpu::~RenderingDeviceDriverWebGpu() {
+	if (queue != nullptr) {
+		wgpuQueueRelease(queue);
+	}
+
+	if (queue != nullptr) {
+		wgpuAdapterRelease(adapter);
+	}
+
+	if (device != nullptr) {
+		wgpuDeviceRelease(device);
+	}
+}

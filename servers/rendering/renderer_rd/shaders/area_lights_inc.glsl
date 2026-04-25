@@ -14,8 +14,16 @@ vec3 fetch_ltc_lod(vec2 uv, vec4 texture_rect, float lod, float max_mipmap, text
 	float low = min(max(floor(lod), 0.0), max_mipmap - 1.0);
 	float high = min(max(floor(lod + 1.0), 1.0), max_mipmap);
 	vec2 sample_pos = texture_rect.xy + clamp(uv, 0.0, 1.0) * texture_rect.zw; // take border into account
+
+#ifndef RENDER_DRIVER_WEBGPU
+	// RENDER_DRIVER_WEBGPU: Tint chokes on this with a "tint/lang/spirv/reader/lower/texture.cc:606 internal compiler error: TINT_ASSERT(tex_ty)"
+	// Issue logged here: https://issues.chromium.org/issues/505729469
 	vec4 sample_col_low = textureLod(sampler2D(area_light_atlas, texture_sampler), sample_pos, low);
 	vec4 sample_col_high = textureLod(sampler2D(area_light_atlas, texture_sampler), sample_pos, high);
+#else
+	vec4 sample_col_low = vec4(0.2);
+	vec4 sample_col_high = vec4(0.8);
+#endif
 
 	float blend = high - clamp(lod, high - 1.0, high);
 	vec4 sample_col = mix(sample_col_high, sample_col_low, blend);

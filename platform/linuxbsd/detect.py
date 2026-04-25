@@ -544,6 +544,9 @@ def configure(env: "SConsEnvironment"):
             # No pkgconfig file so far, hardcode expected lib name.
             env.Append(LIBS=["glslang", "SPIRV", "glslang-default-resource-limits"])
 
+    if env["webgpu"]:
+        env.Append(CPPDEFINES=["WEBGPU_ENABLED", "RD_ENABLED"])
+
     if env["opengl3"]:
         env.Append(CPPDEFINES=["GLES3_ENABLED"])
 

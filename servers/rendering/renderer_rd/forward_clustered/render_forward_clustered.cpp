@@ -3496,15 +3496,19 @@ RID RenderForwardClustered::_setup_render_pass_uniform_set(RenderListType p_rend
 
 			textures.write[i] = default_tex;
 		}
-		RD::Uniform u(RD::UNIFORM_TYPE_TEXTURE, 7, textures);
-		uniforms.push_back(u);
+		// was RD::Uniform u(RD::UNIFORM_TYPE_TEXTURE, 7, textures); // RENDER_DRIVER_WEBGPU: doesn't support arrays
+		for (uint32_t i = 0; i < scene_state.max_lightmaps * 2; i++) {
+			RD::Uniform u(RD::UNIFORM_TYPE_TEXTURE, 200 + i, textures[i]);
+			uniforms.push_back(u);
+		}
 	}
 	{
-		RD::Uniform u;
-		u.binding = 8;
-		u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+		// was u.binding = 8; // RENDER_DRIVER_WEBGPU: doesn't support arrays
 		RID default_tex = texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_3D_WHITE);
 		for (int i = 0; i < MAX_VOXEL_GI_INSTANCESS; i++) {
+			RD::Uniform u;
+			u.binding = 300 + i;
+			u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
 			if (p_render_data && i < (int)p_render_data->voxel_gi_instances->size()) {
 				RID tex = gi.voxel_gi_instance_get_texture((*p_render_data->voxel_gi_instances)[i]);
 				if (!tex.is_valid()) {
@@ -3514,9 +3518,8 @@ RID RenderForwardClustered::_setup_render_pass_uniform_set(RenderListType p_rend
 			} else {
 				u.append_id(default_tex);
 			}
+			uniforms.push_back(u);
 		}
-
-		uniforms.push_back(u);
 	}
 
 	{
@@ -3828,30 +3831,28 @@ RID RenderForwardClustered::_setup_sdfgi_render_pass_uniform_set(RID p_albedo_te
 
 	{
 		// No Lightmaps
-		RD::Uniform u;
-		u.binding = 7;
-		u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
-
+		// was u.binding = 7; // RENDER_DRIVER_WEBGPU: doesn't support arrays
 		RID default_tex = texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_2D_ARRAY_WHITE);
 		for (uint32_t i = 0; i < scene_state.max_lightmaps * 2; i++) {
+			RD::Uniform u;
+			u.binding = 200 + i;
+			u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
 			u.append_id(default_tex);
+			uniforms.push_back(u);
 		}
-
-		uniforms.push_back(u);
 	}
 
 	{
 		// No VoxelGIs
-		RD::Uniform u;
-		u.binding = 8;
-		u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
-
+		// was u.binding = 8; // RENDER_DRIVER_WEBGPU: doesn't support arrays
 		RID default_tex = texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_3D_WHITE);
 		for (int i = 0; i < MAX_VOXEL_GI_INSTANCESS; i++) {
+			RD::Uniform u;
+			u.binding = 300 + i;
+			u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
 			u.append_id(default_tex);
+			uniforms.push_back(u);
 		}
-
-		uniforms.push_back(u);
 	}
 
 	{

@@ -1098,10 +1098,12 @@ void ParticlesStorage::_particles_process(Particles *p_particles, double p_delta
 			uniforms.clear();
 
 			{
-				RD::Uniform u;
-				u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
-				u.binding = 0;
+				// was u.binding = 0; // RENDER_DRIVER_WEBGPU: doesn't support arrays
 				for (uint32_t i = 0; i < ParticlesFrameParams::MAX_3D_TEXTURES; i++) {
+					RD::Uniform u;
+					u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+					u.binding = 300 + i;
+
 					RID rd_tex;
 					if (i < collision_3d_textures_used) {
 						if (TextureStorage::get_singleton()->texture_get_type(collision_3d_textures[i]) == TextureStorage::TYPE_3D) {
@@ -1112,9 +1114,10 @@ void ParticlesStorage::_particles_process(Particles *p_particles, double p_delta
 					if (rd_tex == RID()) {
 						rd_tex = texture_storage->texture_rd_get_default(TextureStorage::DEFAULT_RD_TEXTURE_3D_WHITE);
 					}
+
 					u.append_id(rd_tex);
+					uniforms.push_back(u);
 				}
-				uniforms.push_back(u);
 			}
 			{
 				RD::Uniform u;

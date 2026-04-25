@@ -162,7 +162,29 @@ dst_particles;
 
 #define MAX_3D_TEXTURES 7
 
-layout(set = 2, binding = 0) uniform texture3D sdf_vec_textures[MAX_3D_TEXTURES];
+// layout(set = 2, binding = 0) uniform texture3D sdf_vec_textures[MAX_3D_TEXTURES]; // RENDER_DRIVER_WEBGPU: doesn't support arrays
+layout(set = 2, binding = 300) uniform texture3D sdf_vec_textures0;
+layout(set = 2, binding = 301) uniform texture3D sdf_vec_textures1;
+layout(set = 2, binding = 302) uniform texture3D sdf_vec_textures2;
+layout(set = 2, binding = 303) uniform texture3D sdf_vec_textures3;
+layout(set = 2, binding = 304) uniform texture3D sdf_vec_textures4;
+layout(set = 2, binding = 305) uniform texture3D sdf_vec_textures5;
+layout(set = 2, binding = 306) uniform texture3D sdf_vec_textures6;
+
+// Note: can't just return texture3D, so doing full lookup here
+vec4 sdf_vec_textures(uint idx, sampler s, vec3 uvw_pos) {
+	switch (idx) {
+		case 0: return texture(sampler3D(sdf_vec_textures0, s), uvw_pos);
+		case 1: return texture(sampler3D(sdf_vec_textures1, s), uvw_pos);
+		case 2: return texture(sampler3D(sdf_vec_textures2, s), uvw_pos);
+		case 3: return texture(sampler3D(sdf_vec_textures3, s), uvw_pos);
+		case 4: return texture(sampler3D(sdf_vec_textures4, s), uvw_pos);
+		case 5: return texture(sampler3D(sdf_vec_textures5, s), uvw_pos);
+		case 6: return texture(sampler3D(sdf_vec_textures6, s), uvw_pos);
+	}
+	return vec4(0.0);
+}
+
 layout(set = 2, binding = 1) uniform texture2D height_field_texture;
 
 /* SET 3: MATERIAL */
@@ -344,19 +366,22 @@ void main() {
 			int src_index = atomicAdd(src_particles.particle_count, -1) - 1;
 
 			if (src_index >= 0) {
+				// Tint trips up with an atomic related assert when accessed as src_particles.data[src_index].xform[3]
+				// Issue logged here: https://issues.chromium.org/issues/505056911
+				mat4 m = src_particles.data[src_index].xform;
 				PARTICLE.flags = (PARTICLE_FLAG_ACTIVE | PARTICLE_FLAG_STARTED | (FRAME.cycle << PARTICLE_FRAME_SHIFT));
 				restart = true;
 
 				if (bool(src_particles.data[src_index].flags & EMISSION_FLAG_HAS_POSITION)) {
-					PARTICLE.xform[3] = src_particles.data[src_index].xform[3];
+					PARTICLE.xform[3] = m[3];
 				} else {
 					PARTICLE.xform[3] = vec4(0, 0, 0, 1);
 					restart_position = true;
 				}
 				if (bool(src_particles.data[src_index].flags & EMISSION_FLAG_HAS_ROTATION_SCALE)) {
-					PARTICLE.xform[0] = src_particles.data[src_index].xform[0];
-					PARTICLE.xform[1] = src_particles.data[src_index].xform[1];
-					PARTICLE.xform[2] = src_particles.data[src_index].xform[2];
+					PARTICLE.xform[0] = m[0];
+					PARTICLE.xform[1] = m[1];
+					PARTICLE.xform[2] = m[2];
 				} else {
 					PARTICLE.xform[0] = vec4(1, 0, 0, 0);
 					PARTICLE.xform[1] = vec4(0, 1, 0, 0);
@@ -480,7 +505,7 @@ void main() {
 					if (any(lessThan(uvw_pos, vec3(0.0))) || any(greaterThan(uvw_pos, vec3(1.0)))) {
 						continue;
 					}
-					vec3 s = texture(sampler3D(sdf_vec_textures[FRAME.attractors[i].texture_index], SAMPLER_LINEAR_CLAMP), uvw_pos).xyz * -2.0 + 1.0;
+					vec3 s = sdf_vec_textures(FRAME.attractors[i].texture_index, SAMPLER_LINEAR_CLAMP, uvw_pos).xyz * -2.0 + 1.0;
 					dir = mat3(FRAME.attractors[i].transform) * safe_normalize(s); //revert direction
 					amount = length(s);
 
@@ -605,7 +630,7 @@ void main() {
 						}
 
 						vec3 uvw_pos = (local_pos / FRAME.colliders[i].extents) * 0.5 + 0.5;
-						float s = texture(sampler3D(sdf_vec_textures[FRAME.colliders[i].texture_index], SAMPLER_LINEAR_CLAMP), uvw_pos).r;
+						float s = sdf_vec_textures(FRAME.colliders[i].texture_index, SAMPLER_LINEAR_CLAMP, uvw_pos).r;
 						s *= FRAME.colliders[i].scale;
 						s += extra_dist;
 						if (s <= particle_size + EPSILON) {
@@ -615,9 +640,9 @@ void main() {
 							normal = mat3(FRAME.colliders[i].transform) *
 									normalize(
 											vec3(
-													texture(sampler3D(sdf_vec_textures[FRAME.colliders[i].texture_index], SAMPLER_LINEAR_CLAMP), uvw_pos + vec3(EPSILON, 0.0, 0.0)).r - texture(sampler3D(sdf_vec_textures[FRAME.colliders[i].texture_index], SAMPLER_LINEAR_CLAMP), uvw_pos - vec3(EPSILON, 0.0, 0.0)).r,
-													texture(sampler3D(sdf_vec_textures[FRAME.colliders[i].texture_index], SAMPLER_LINEAR_CLAMP), uvw_pos + vec3(0.0, EPSILON, 0.0)).r - texture(sampler3D(sdf_vec_textures[FRAME.colliders[i].texture_index], SAMPLER_LINEAR_CLAMP), uvw_pos - vec3(0.0, EPSILON, 0.0)).r,
-													texture(sampler3D(sdf_vec_textures[FRAME.colliders[i].texture_index], SAMPLER_LINEAR_CLAMP), uvw_pos + vec3(0.0, 0.0, EPSILON)).r - texture(sampler3D(sdf_vec_textures[FRAME.colliders[i].texture_index], SAMPLER_LINEAR_CLAMP), uvw_pos - vec3(0.0, 0.0, EPSILON)).r));
+													sdf_vec_textures(FRAME.colliders[i].texture_index, SAMPLER_LINEAR_CLAMP, uvw_pos + vec3(EPSILON, 0.0, 0.0)).r - sdf_vec_textures(FRAME.colliders[i].texture_index, SAMPLER_LINEAR_CLAMP, uvw_pos - vec3(EPSILON, 0.0, 0.0)).r,
+													sdf_vec_textures(FRAME.colliders[i].texture_index, SAMPLER_LINEAR_CLAMP, uvw_pos + vec3(0.0, EPSILON, 0.0)).r - sdf_vec_textures(FRAME.colliders[i].texture_index, SAMPLER_LINEAR_CLAMP, uvw_pos - vec3(0.0, EPSILON, 0.0)).r,
+													sdf_vec_textures(FRAME.colliders[i].texture_index, SAMPLER_LINEAR_CLAMP, uvw_pos + vec3(0.0, 0.0, EPSILON)).r - sdf_vec_textures(FRAME.colliders[i].texture_index, SAMPLER_LINEAR_CLAMP, uvw_pos - vec3(0.0, 0.0, EPSILON)).r));
 						}
 
 					} break;

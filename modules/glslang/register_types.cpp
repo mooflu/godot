@@ -34,7 +34,7 @@
 
 #include "core/config/engine.h"
 
-#ifdef D3D12_ENABLED
+#if defined(D3D12_ENABLED) || defined(WEBGPU_ENABLED)
 #include "core/os/os.h"
 #endif
 
@@ -68,7 +68,28 @@ Vector<uint8_t> compile_glslang_shader(RenderingDeviceCommons::ShaderStage p_sta
 	glslang::EShTargetLanguageVersion TargetVersion = (glslang::EShTargetLanguageVersion)p_spirv_version;
 
 	glslang::TShader shader(stages[p_stage]);
+#ifdef WEBGPU_ENABLED
+	CharString cs;
+	if (OS::get_singleton()->get_current_rendering_driver_name() == "webgpu") {
+		const String &source_code = p_source_code
+			.replace(" restrict ", " ") // fails in TINT with unhandled member decoration: 19 (Restrict = 19)
+			.replace(" volatile ", " ") // fails in TINT with unhandled member decoration: 21 (Volatile = 21)
+			.replace("writeonly DstVertexData", "DstVertexData") // fails in TINT with 'storage' address space must have access 'read' or 'read-write'
+			.replace(" writeonly buffer ", " buffer ") // fails in TINT with 'storage' address space must have access 'read' or 'read-write'
+			.replace("groupMemoryBarrier();", "") // fails in TINT with unimplemented OpMemoryBarrier; barrier() already emits workgroupBarrier, so remove groupMemoryBarrier
+			.replace("memoryBarrierShared();", ""); // fails in TINT with unimplemented OpMemoryBarrier; same as groupMemoryBarrier
+		cs = source_code.utf8();
+#if 0
+		if (source_code.contains("sample_col_low")) {
+			print_verbose(source_code);
+		}
+#endif
+	} else {
+		cs = p_source_code.utf8();
+	}
+#else
 	CharString cs = p_source_code.utf8();
+#endif
 	const char *cs_strings = cs.get_data();
 	std::string preamble = "";
 

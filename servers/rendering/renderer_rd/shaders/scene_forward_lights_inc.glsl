@@ -1,13 +1,15 @@
 // Functions related to lighting
 
+#ifndef RENDER_DRIVER_WEBGPU
 #extension GL_EXT_control_flow_attributes : require
+#endif
 
 #include "area_lights_inc.glsl"
 
 // This annotation macro must be placed before any loops that rely on specialization constants as their upper bound.
 // Drivers may choose to unroll these loops based on the possible range of the value that can be deduced from the
 // spec constant, which can lead to their code generation taking a much longer time than desired.
-#ifdef UBERSHADER
+#if defined(UBERSHADER) && !defined(RENDER_DRIVER_WEBGPU)
 // Prefer to not unroll loops on the ubershader to reduce code size as much as possible.
 #define SPEC_CONSTANT_LOOP_ANNOTATION [[dont_unroll]]
 #else
@@ -1431,9 +1433,11 @@ half blur_shadow(half shadow) {
 #if 0
 	//disabling for now, will investigate later
 	float interp_shadow = shadow;
+#ifndef RENDER_DRIVER_WEBGPU
 	if (gl_HelperInvocation) {
 		interp_shadow = -4.0; // technically anything below -4 will do but just to make sure
 	}
+#endif //RENDER_DRIVER_WEBGPU
 
 	uvec2 fc2 = uvec2(gl_FragCoord.xy);
 	interp_shadow -= dFdx(interp_shadow) * (float(fc2.x & 1) - 0.5);

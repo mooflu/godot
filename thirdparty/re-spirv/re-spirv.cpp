@@ -2311,7 +2311,7 @@ namespace respv {
         std::vector<uint8_t> &optimizedData;
         Options options;
 
-        OptimizerContext() = delete;
+        // OptimizerContext() = delete; // so it compiles with c++20 and -fpermissive
     };
 
     static void optimizerEliminateInstruction(uint32_t pInstructionIndex, OptimizerContext &rContext) {

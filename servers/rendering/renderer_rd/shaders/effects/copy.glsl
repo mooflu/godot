@@ -69,6 +69,19 @@ shared vec4 local_cache[256];
 shared vec4 temp_cache[128];
 #endif
 
+#ifdef RENDER_DRIVER_WEBGPU
+#define isinf is_inf
+// RENDER_DRIVER_WEBGPU: TINT_UNIMPLEMENTED unhandled SPIR-V instruction: OpIsInf (val = 157)
+bvec4 is_inf(vec4 v) {
+    return greaterThan(abs(v), vec4(3.402823e38));
+}
+// RENDER_DRIVER_WEBGPU: TINT_UNIMPLEMENTED unhandled SPIR-V instruction: OpIsNan (val = 156)
+#define isnan is_nan
+bvec4 is_nan(vec4 v) {
+	return bvec4(v != v);
+}
+#endif // RENDER_DRIVER_WEBGPU
+
 void main() {
 	// Pixel being shaded
 	ivec2 pos = ivec2(gl_GlobalInvocationID.xy);

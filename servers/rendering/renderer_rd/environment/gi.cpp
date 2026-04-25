@@ -992,56 +992,60 @@ void GI::SDFGI::create(RID p_env, const Vector3 &p_world_position, uint32_t p_re
 		Vector<RD::Uniform> uniforms;
 
 		{
-			RD::Uniform u;
-			u.binding = 1;
-			u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+			// was u.binding = 1; // RENDER_DRIVER_WEBGPU: doesn't support arrays
 			for (uint32_t j = 0; j < SDFGI::MAX_CASCADES; j++) {
+				RD::Uniform u;
+				u.binding = 400 + j;
+				u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
 				if (j < cascades.size()) {
 					u.append_id(cascades[j].sdf_tex);
 				} else {
 					u.append_id(texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_3D_WHITE));
 				}
+				uniforms.push_back(u);
 			}
-			uniforms.push_back(u);
 		}
 		{
-			RD::Uniform u;
-			u.binding = 2;
-			u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+			// was u.binding = 2; // RENDER_DRIVER_WEBGPU: doesn't support arrays
 			for (uint32_t j = 0; j < SDFGI::MAX_CASCADES; j++) {
+				RD::Uniform u;
+				u.binding = 500 + j;
+				u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
 				if (j < cascades.size()) {
 					u.append_id(cascades[j].light_tex);
 				} else {
 					u.append_id(texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_3D_WHITE));
 				}
+				uniforms.push_back(u);
 			}
-			uniforms.push_back(u);
 		}
 		{
-			RD::Uniform u;
-			u.binding = 3;
-			u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+			// was u.binding = 3; // RENDER_DRIVER_WEBGPU: doesn't support arrays
 			for (uint32_t j = 0; j < SDFGI::MAX_CASCADES; j++) {
+				RD::Uniform u;
+				u.binding = 600 + j;
+				u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
 				if (j < cascades.size()) {
 					u.append_id(cascades[j].light_aniso_0_tex);
 				} else {
 					u.append_id(texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_3D_WHITE));
 				}
+				uniforms.push_back(u);
 			}
-			uniforms.push_back(u);
 		}
 		{
-			RD::Uniform u;
-			u.binding = 4;
-			u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+			// was u.binding = 4; // RENDER_DRIVER_WEBGPU: doesn't support arrays
 			for (uint32_t j = 0; j < SDFGI::MAX_CASCADES; j++) {
+				RD::Uniform u;
+				u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+				u.binding = 700 + j;
 				if (j < cascades.size()) {
 					u.append_id(cascades[j].light_aniso_1_tex);
 				} else {
 					u.append_id(texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_3D_WHITE));
 				}
+				uniforms.push_back(u);
 			}
-			uniforms.push_back(u);
 		}
 		{
 			RD::Uniform u;
@@ -4221,13 +4225,14 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 				uniforms.push_back(u);
 			}
 			{
-				RD::Uniform u;
-				u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
-				u.binding = 17;
+				// was u.binding = 17; // RENDER_DRIVER_WEBGPU: doesn't support arrays
 				for (int i = 0; i < MAX_VOXEL_GI_INSTANCES; i++) {
+					RD::Uniform u;
+					u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+					u.binding = 300 + i;
 					u.append_id(rbgi->voxel_gi_textures[i]);
+					uniforms.push_back(u);
 				}
-				uniforms.push_back(u);
 			}
 			{
 				RD::Uniform u;

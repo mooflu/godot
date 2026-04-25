@@ -236,6 +236,7 @@ Error RenderingShaderContainer::reflect_spirv(const String &p_shader_name, Span<
 	ReflectShader &reflection = r_shader;
 
 	shader_name = p_shader_name.utf8();
+	print_verbose("reflect_spirv: name=" + p_shader_name);
 
 	const uint32_t spirv_size = p_spirv.size() + 0;
 
@@ -638,7 +639,7 @@ Error RenderingShaderContainer::reflect_spirv(const String &p_shader_name, Span<
 				reflection.push_constant_size = pconstants[0]->size;
 				reflection.push_constant_stages.set_flag(uniform_stage_flags);
 
-				//print_line("Stage: " + String(RDC::SHADER_STAGE_NAMES[stage]) + " push constant of size=" + itos(push_constant.push_constant_size));
+				print_line("Stage: " + String(RDC::SHADER_STAGE_NAMES[stage]) + " push constant of size=" + itos(reflection.push_constant_size));
 			}
 		}
 	}
@@ -681,6 +682,7 @@ void RenderingShaderContainer::set_from_shader_reflection(const ReflectShader &p
 			binding_data.stages = uint32_t(uniform.stages);
 			binding_data.length = uniform.length;
 			binding_data.writable = uint32_t(uniform.writable);
+
 			reflection_binding_set_uniforms_data.push_back(binding_data);
 		}
 

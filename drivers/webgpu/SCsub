@@ -1,0 +1,23 @@
+#!/usr/bin/env python
+from misc.utility.scons_hints import *
+
+Import("env")
+
+# Godot source files
+driver_obj = []
+
+env.add_source_files(driver_obj, "*.cpp")
+env.drivers_sources += driver_obj
+
+dawn_dir = "#thirdparty/dawn"
+#, "#thirdparty/spirv-webgpu-transform"]
+
+# Use webgpu, dawn, tint headers
+# had to add compiler.h from dawn to thirdparty/dawn/include/src/utils (wasn't installed in sandbox)
+env.Prepend(CPPPATH=[dawn_dir, dawn_dir + '/include', dawn_dir + '/include/src/tint'])
+
+# env.Prepend(LIBS=["emdawnwebgpu_c", "dawn_glfw"]) #, "libspirv_webgpu_transform_ffi"])
+env.Prepend(LIBS=["webgpu_dawn"]) #, "libspirv_webgpu_transform_ffi"])
+
+env.Prepend(LIBPATH=dawn_dir + '/lib')
+

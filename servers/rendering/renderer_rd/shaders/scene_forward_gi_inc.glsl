@@ -1,7 +1,7 @@
 // Functions related to gi/sdfgi for our forward renderer
 
 //standard voxel cone trace
-vec4 voxel_cone_trace(texture3D probe, vec3 cell_size, vec3 pos, vec3 direction, float tan_half_angle, float max_distance, float p_bias) {
+vec4 voxel_cone_trace(uint idx, vec3 cell_size, vec3 pos, vec3 direction, float tan_half_angle, float max_distance, float p_bias) {
 	float dist = p_bias;
 	vec4 color = vec4(0.0);
 
@@ -13,7 +13,7 @@ vec4 voxel_cone_trace(texture3D probe, vec3 cell_size, vec3 pos, vec3 direction,
 		if (any(greaterThan(abs(uvw_pos - 0.5), vec3(0.5f + half_diameter * cell_size)))) {
 			break;
 		}
-		vec4 scolor = textureLod(sampler3D(probe, DEFAULT_SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP), uvw_pos, log2(diameter));
+		vec4 scolor = voxel_gi_textures_lod(idx, DEFAULT_SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP, uvw_pos, log2(diameter));
 		float a = (1.0 - color.a);
 		color += a * scolor;
 		dist += half_diameter;
@@ -22,7 +22,7 @@ vec4 voxel_cone_trace(texture3D probe, vec3 cell_size, vec3 pos, vec3 direction,
 	return color;
 }
 
-vec4 voxel_cone_trace_45_degrees(texture3D probe, vec3 cell_size, vec3 pos, vec3 direction, float tan_half_angle, float max_distance, float p_bias) {
+vec4 voxel_cone_trace_45_degrees(uint idx, vec3 cell_size, vec3 pos, vec3 direction, float tan_half_angle, float max_distance, float p_bias) {
 	float dist = p_bias;
 	vec4 color = vec4(0.0);
 	float radius = max(0.5, tan_half_angle * dist);
@@ -35,7 +35,8 @@ vec4 voxel_cone_trace_45_degrees(texture3D probe, vec3 cell_size, vec3 pos, vec3
 		if (any(greaterThan(abs(uvw_pos - 0.5), vec3(0.5f + radius * cell_size)))) {
 			break;
 		}
-		vec4 scolor = textureLod(sampler3D(probe, DEFAULT_SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP), uvw_pos, lod_level);
+
+		vec4 scolor = voxel_gi_textures_lod(idx, DEFAULT_SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP, uvw_pos, lod_level);
 		lod_level += 1.0;
 
 		float a = (1.0 - color.a);
@@ -85,7 +86,7 @@ void voxel_gi_compute(uint index, vec3 position, vec3 normal, vec3 ref_vec, mat3
 	for (int i = 0; i < MAX_CONE_DIRS; i++) {
 		vec3 dir = normalize((voxel_gi_instances.data[index].xform * vec4(normal_xform * cone_dirs[i], 0.0)).xyz);
 
-		vec4 cone_light = voxel_cone_trace_45_degrees(voxel_gi_textures[index], cell_size, position, dir, cone_angle_tan, max_distance, voxel_gi_instances.data[index].bias);
+		vec4 cone_light = voxel_cone_trace_45_degrees(index, cell_size, position, dir, cone_angle_tan, max_distance, voxel_gi_instances.data[index].bias);
 
 		if (voxel_gi_instances.data[index].blend_ambient) {
 			cone_light.rgb = mix(ambient, cone_light.rgb, min(1.0, cone_light.a / 0.95));
@@ -98,7 +99,7 @@ void voxel_gi_compute(uint index, vec3 position, vec3 normal, vec3 ref_vec, mat3
 	out_diff += vec4(light * blend, blend);
 
 	//irradiance
-	vec4 irr_light = voxel_cone_trace(voxel_gi_textures[index], cell_size, position, ref_vec, tan(roughness * 0.5 * M_PI * 0.99), max_distance, voxel_gi_instances.data[index].bias);
+	vec4 irr_light = voxel_cone_trace(index, cell_size, position, ref_vec, tan(roughness * 0.5 * M_PI * 0.99), max_distance, voxel_gi_instances.data[index].bias);
 	if (voxel_gi_instances.data[index].blend_ambient) {
 		irr_light.rgb = mix(environment, irr_light.rgb, min(1.0, irr_light.a / 0.95));
 	}

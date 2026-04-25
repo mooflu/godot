@@ -22,10 +22,103 @@ layout(constant_id = 2) const bool sc_use_vrs = false;
 
 //set 0 for SDFGI and render buffers
 
-layout(set = 0, binding = 1) uniform texture3D sdf_cascades[SDFGI_MAX_CASCADES];
-layout(set = 0, binding = 2) uniform texture3D light_cascades[SDFGI_MAX_CASCADES];
-layout(set = 0, binding = 3) uniform texture3D aniso0_cascades[SDFGI_MAX_CASCADES];
-layout(set = 0, binding = 4) uniform texture3D aniso1_cascades[SDFGI_MAX_CASCADES];
+
+// layout(set = 0, binding = 1) uniform texture3D sdf_cascades[SDFGI_MAX_CASCADES]; // RENDER_DRIVER_WEBGPU: doesn't support arrays
+layout(set = 0, binding = 400) uniform texture3D sdf_cascades0;
+layout(set = 0, binding = 401) uniform texture3D sdf_cascades1;
+layout(set = 0, binding = 402) uniform texture3D sdf_cascades2;
+layout(set = 0, binding = 403) uniform texture3D sdf_cascades3;
+layout(set = 0, binding = 404) uniform texture3D sdf_cascades4;
+layout(set = 0, binding = 405) uniform texture3D sdf_cascades5;
+layout(set = 0, binding = 406) uniform texture3D sdf_cascades6;
+layout(set = 0, binding = 407) uniform texture3D sdf_cascades7;
+
+vec4 sdf_cascades_lod(uint idx, sampler s, vec3 uvw_pos, float lod_level) {
+	switch (idx) {
+		case 0: return textureLod(sampler3D(sdf_cascades0, s), uvw_pos, lod_level);
+		case 1: return textureLod(sampler3D(sdf_cascades1, s), uvw_pos, lod_level);
+		case 2: return textureLod(sampler3D(sdf_cascades2, s), uvw_pos, lod_level);
+		case 3: return textureLod(sampler3D(sdf_cascades3, s), uvw_pos, lod_level);
+		case 4: return textureLod(sampler3D(sdf_cascades4, s), uvw_pos, lod_level);
+		case 5: return textureLod(sampler3D(sdf_cascades5, s), uvw_pos, lod_level);
+		case 6: return textureLod(sampler3D(sdf_cascades6, s), uvw_pos, lod_level);
+		case 7: return textureLod(sampler3D(sdf_cascades7, s), uvw_pos, lod_level);
+	}
+	return vec4(0.0);
+}
+
+// layout(set = 0, binding = 2) uniform texture3D light_cascades[SDFGI_MAX_CASCADES]; // RENDER_DRIVER_WEBGPU: doesn't support arrays
+layout(set = 0, binding = 500) uniform texture3D light_cascades0;
+layout(set = 0, binding = 501) uniform texture3D light_cascades1;
+layout(set = 0, binding = 502) uniform texture3D light_cascades2;
+layout(set = 0, binding = 503) uniform texture3D light_cascades3;
+layout(set = 0, binding = 504) uniform texture3D light_cascades4;
+layout(set = 0, binding = 505) uniform texture3D light_cascades5;
+layout(set = 0, binding = 506) uniform texture3D light_cascades6;
+layout(set = 0, binding = 507) uniform texture3D light_cascades7;
+
+vec4 light_cascades_lod(uint idx, sampler s, vec3 uvw_pos, float lod_level) {
+	switch (idx) {
+		case 0: return textureLod(sampler3D(light_cascades0, s), uvw_pos, lod_level);
+		case 1: return textureLod(sampler3D(light_cascades1, s), uvw_pos, lod_level);
+		case 2: return textureLod(sampler3D(light_cascades2, s), uvw_pos, lod_level);
+		case 3: return textureLod(sampler3D(light_cascades3, s), uvw_pos, lod_level);
+		case 4: return textureLod(sampler3D(light_cascades4, s), uvw_pos, lod_level);
+		case 5: return textureLod(sampler3D(light_cascades5, s), uvw_pos, lod_level);
+		case 6: return textureLod(sampler3D(light_cascades6, s), uvw_pos, lod_level);
+		case 7: return textureLod(sampler3D(light_cascades7, s), uvw_pos, lod_level);
+	}
+	return vec4(0.0);
+}
+
+// layout(set = 0, binding = 3) uniform texture3D aniso0_cascades[SDFGI_MAX_CASCADES]; // RENDER_DRIVER_WEBGPU: doesn't support arrays
+layout(set = 0, binding = 600) uniform texture3D aniso0_cascades0;
+layout(set = 0, binding = 601) uniform texture3D aniso0_cascades1;
+layout(set = 0, binding = 602) uniform texture3D aniso0_cascades2;
+layout(set = 0, binding = 603) uniform texture3D aniso0_cascades3;
+layout(set = 0, binding = 604) uniform texture3D aniso0_cascades4;
+layout(set = 0, binding = 605) uniform texture3D aniso0_cascades5;
+layout(set = 0, binding = 606) uniform texture3D aniso0_cascades6;
+layout(set = 0, binding = 607) uniform texture3D aniso0_cascades7;
+
+vec4 aniso0_cascades_lod(uint idx, sampler s, vec3 uvw_pos, float lod_level) {
+	switch (idx) {
+		case 0: return textureLod(sampler3D(aniso0_cascades0, s), uvw_pos, lod_level);
+		case 1: return textureLod(sampler3D(aniso0_cascades1, s), uvw_pos, lod_level);
+		case 2: return textureLod(sampler3D(aniso0_cascades2, s), uvw_pos, lod_level);
+		case 3: return textureLod(sampler3D(aniso0_cascades3, s), uvw_pos, lod_level);
+		case 4: return textureLod(sampler3D(aniso0_cascades4, s), uvw_pos, lod_level);
+		case 5: return textureLod(sampler3D(aniso0_cascades5, s), uvw_pos, lod_level);
+		case 6: return textureLod(sampler3D(aniso0_cascades6, s), uvw_pos, lod_level);
+		case 7: return textureLod(sampler3D(aniso0_cascades7, s), uvw_pos, lod_level);
+	}
+	return vec4(0.0);
+}
+
+// layout(set = 0, binding = 4) uniform texture3D aniso1_cascades[SDFGI_MAX_CASCADES]; // RENDER_DRIVER_WEBGPU: doesn't support arrays
+layout(set = 0, binding = 700) uniform texture3D aniso1_cascades0;
+layout(set = 0, binding = 701) uniform texture3D aniso1_cascades1;
+layout(set = 0, binding = 702) uniform texture3D aniso1_cascades2;
+layout(set = 0, binding = 703) uniform texture3D aniso1_cascades3;
+layout(set = 0, binding = 704) uniform texture3D aniso1_cascades4;
+layout(set = 0, binding = 705) uniform texture3D aniso1_cascades5;
+layout(set = 0, binding = 706) uniform texture3D aniso1_cascades6;
+layout(set = 0, binding = 707) uniform texture3D aniso1_cascades7;
+
+vec4 aniso1_cascades_lod(uint idx, sampler s, vec3 uvw_pos, float lod_level) {
+	switch (idx) {
+		case 0: return textureLod(sampler3D(aniso1_cascades0, s), uvw_pos, lod_level);
+		case 1: return textureLod(sampler3D(aniso1_cascades1, s), uvw_pos, lod_level);
+		case 2: return textureLod(sampler3D(aniso1_cascades2, s), uvw_pos, lod_level);
+		case 3: return textureLod(sampler3D(aniso1_cascades3, s), uvw_pos, lod_level);
+		case 4: return textureLod(sampler3D(aniso1_cascades4, s), uvw_pos, lod_level);
+		case 5: return textureLod(sampler3D(aniso1_cascades5, s), uvw_pos, lod_level);
+		case 6: return textureLod(sampler3D(aniso1_cascades6, s), uvw_pos, lod_level);
+		case 7: return textureLod(sampler3D(aniso1_cascades7, s), uvw_pos, lod_level);
+	}
+	return vec4(0.0);
+}
+
 layout(set = 0, binding = 5) uniform texture3D occlusion_texture;
 
 layout(set = 0, binding = 6) uniform sampler linear_sampler;
@@ -99,7 +192,29 @@ layout(set = 0, binding = 16, std140) uniform VoxelGIs {
 }
 voxel_gi_instances;
 
-layout(set = 0, binding = 17) uniform texture3D voxel_gi_textures[MAX_VOXEL_GI_INSTANCES];
+// layout(set = 0, binding = 17) uniform texture3D voxel_gi_textures[MAX_VOXEL_GI_INSTANCES]; // RENDER_DRIVER_WEBGPU: doesn't support arrays
+layout(set = 0, binding = 300) uniform texture3D voxel_gi_textures0;
+layout(set = 0, binding = 301) uniform texture3D voxel_gi_textures1;
+layout(set = 0, binding = 302) uniform texture3D voxel_gi_textures2;
+layout(set = 0, binding = 303) uniform texture3D voxel_gi_textures3;
+layout(set = 0, binding = 304) uniform texture3D voxel_gi_textures4;
+layout(set = 0, binding = 305) uniform texture3D voxel_gi_textures5;
+layout(set = 0, binding = 306) uniform texture3D voxel_gi_textures6;
+layout(set = 0, binding = 307) uniform texture3D voxel_gi_textures7;
+
+vec4 voxel_gi_textures_lod(uint idx, sampler s, vec3 uvw_pos, float lod_level) {
+	switch (idx) {
+		case 0: return textureLod(sampler3D(voxel_gi_textures0, s), uvw_pos, lod_level);
+		case 1: return textureLod(sampler3D(voxel_gi_textures1, s), uvw_pos, lod_level);
+		case 2: return textureLod(sampler3D(voxel_gi_textures2, s), uvw_pos, lod_level);
+		case 3: return textureLod(sampler3D(voxel_gi_textures3, s), uvw_pos, lod_level);
+		case 4: return textureLod(sampler3D(voxel_gi_textures4, s), uvw_pos, lod_level);
+		case 5: return textureLod(sampler3D(voxel_gi_textures5, s), uvw_pos, lod_level);
+		case 6: return textureLod(sampler3D(voxel_gi_textures6, s), uvw_pos, lod_level);
+		case 7: return textureLod(sampler3D(voxel_gi_textures7, s), uvw_pos, lod_level);
+	}
+	return vec4(0.0);
+}
 
 layout(set = 0, binding = 18, std140) uniform SceneData {
 	mat4x4 inv_projection[2];
@@ -412,11 +527,11 @@ void sdfgi_process(vec3 vertex, vec3 normal, vec3 reflection, float roughness, o
 					vec3 pos = ray_pos - sdfgi.cascades[i].position;
 					pos *= sdfgi.cascades[i].to_cell * pos_to_uvw;
 
-					float fdistance = textureLod(sampler3D(sdf_cascades[i], linear_sampler), pos, 0.0).r * 255.0 - 1.1;
+					float fdistance = sdf_cascades_lod(i, linear_sampler, pos, 0.0).r * 255.0 - 1.1;
 
 					vec4 hit_light = vec4(0.0);
 					if (fdistance < softness) {
-						hit_light.rgb = textureLod(sampler3D(light_cascades[i], linear_sampler), pos, 0.0).rgb;
+						hit_light.rgb = light_cascades_lod(i, linear_sampler, pos, 0.0).rgb;
 						hit_light.rgb *= 0.5; //approximation given value read is actually meant for anisotropy
 						hit_light.a = clamp(1.0 - (fdistance / softness), 0.0, 1.0);
 						hit_light.rgb *= hit_light.a;
@@ -428,11 +543,11 @@ void sdfgi_process(vec3 vertex, vec3 normal, vec3 reflection, float roughness, o
 						pos = ray_pos - sdfgi.cascades[next_i].position;
 						pos *= sdfgi.cascades[next_i].to_cell * pos_to_uvw;
 
-						float fdistance2 = textureLod(sampler3D(sdf_cascades[next_i], linear_sampler), pos, 0.0).r * 255.0 - 1.1;
+						float fdistance2 = sdf_cascades_lod(next_i, linear_sampler, pos, 0.0).r * 255.0 - 1.1;
 
 						vec4 hit_light2 = vec4(0.0);
 						if (fdistance2 < softness) {
-							hit_light2.rgb = textureLod(sampler3D(light_cascades[next_i], linear_sampler), pos, 0.0).rgb;
+							hit_light2.rgb = light_cascades_lod(next_i, linear_sampler, pos, 0.0).rgb;
 							hit_light2.rgb *= 0.5; //approximation given value read is actually meant for anisotropy
 							hit_light2.a = clamp(1.0 - (fdistance2 / softness), 0.0, 1.0);
 							hit_light2.rgb *= hit_light2.a;
@@ -484,7 +599,7 @@ void sdfgi_process(vec3 vertex, vec3 normal, vec3 reflection, float roughness, o
 }
 
 //standard voxel cone trace
-vec4 voxel_cone_trace(texture3D probe, vec3 cell_size, vec3 pos, vec3 direction, float tan_half_angle, float max_distance, float p_bias) {
+vec4 voxel_cone_trace(uint idx, vec3 cell_size, vec3 pos, vec3 direction, float tan_half_angle, float max_distance, float p_bias) {
 	float dist = p_bias;
 	vec4 color = vec4(0.0);
 
@@ -496,7 +611,7 @@ vec4 voxel_cone_trace(texture3D probe, vec3 cell_size, vec3 pos, vec3 direction,
 		if (any(greaterThan(abs(uvw_pos - 0.5), vec3(0.5f + half_diameter * cell_size)))) {
 			break;
 		}
-		vec4 scolor = textureLod(sampler3D(probe, linear_sampler_with_mipmaps), uvw_pos, log2(diameter));
+		vec4 scolor = voxel_gi_textures_lod(idx, linear_sampler_with_mipmaps, uvw_pos, log2(diameter));
 		float a = (1.0 - color.a);
 		color += a * scolor;
 		dist += half_diameter;
@@ -505,7 +620,7 @@ vec4 voxel_cone_trace(texture3D probe, vec3 cell_size, vec3 pos, vec3 direction,
 	return color;
 }
 
-vec4 voxel_cone_trace_45_degrees(texture3D probe, vec3 cell_size, vec3 pos, vec3 direction, float max_distance, float p_bias) {
+vec4 voxel_cone_trace_45_degrees(uint idx, vec3 cell_size, vec3 pos, vec3 direction, float max_distance, float p_bias) {
 	float dist = p_bias;
 	vec4 color = vec4(0.0);
 	float radius = max(0.5, dist);
@@ -518,7 +633,7 @@ vec4 voxel_cone_trace_45_degrees(texture3D probe, vec3 cell_size, vec3 pos, vec3
 		if (any(greaterThan(abs(uvw_pos - 0.5), vec3(0.5f + radius * cell_size)))) {
 			break;
 		}
-		vec4 scolor = textureLod(sampler3D(probe, linear_sampler_with_mipmaps), uvw_pos, lod_level);
+		vec4 scolor = voxel_gi_textures_lod(idx, linear_sampler_with_mipmaps, uvw_pos, lod_level);
 		lod_level += 1.0;
 
 		float a = (1.0 - color.a);
@@ -570,7 +685,7 @@ void voxel_gi_compute(uint index, vec3 position, vec3 normal, vec3 ref_vec, mat3
 
 		for (uint i = 0; i < cone_dir_count; i++) {
 			vec3 dir = normalize(dir_xform * cone_dirs[i]);
-			light += cone_weights[i] * voxel_cone_trace(voxel_gi_textures[index], cell_size, position, dir, cone_angle_tan, max_distance, voxel_gi_instances.data[index].bias);
+			light += cone_weights[i] * voxel_cone_trace(index, cell_size, position, dir, cone_angle_tan, max_distance, voxel_gi_instances.data[index].bias);
 		}
 	} else {
 		const uint cone_dir_count = 4;
@@ -583,7 +698,7 @@ void voxel_gi_compute(uint index, vec3 position, vec3 normal, vec3 ref_vec, mat3
 		float cone_weights[cone_dir_count] = float[](0.25, 0.25, 0.25, 0.25);
 		for (int i = 0; i < cone_dir_count; i++) {
 			vec3 dir = normalize(dir_xform * cone_dirs[i]);
-			light += cone_weights[i] * voxel_cone_trace_45_degrees(voxel_gi_textures[index], cell_size, position, dir, max_distance, voxel_gi_instances.data[index].bias);
+			light += cone_weights[i] * voxel_cone_trace_45_degrees(index, cell_size, position, dir, max_distance, voxel_gi_instances.data[index].bias);
 		}
 	}
 
@@ -595,7 +710,7 @@ void voxel_gi_compute(uint index, vec3 position, vec3 normal, vec3 ref_vec, mat3
 	out_diff += light * blend;
 
 	//radiance
-	vec4 irr_light = voxel_cone_trace(voxel_gi_textures[index], cell_size, position, ref_vec, tan(roughness * 0.5 * M_PI * 0.99), max_distance, voxel_gi_instances.data[index].bias);
+	vec4 irr_light = voxel_cone_trace(index, cell_size, position, ref_vec, tan(roughness * 0.5 * M_PI * 0.99), max_distance, voxel_gi_instances.data[index].bias);
 	irr_light.rgb *= voxel_gi_instances.data[index].dynamic_range * voxel_gi_instances.data[index].exposure_normalization;
 	if (!voxel_gi_instances.data[index].blend_ambient) {
 		irr_light.a = 1.0;

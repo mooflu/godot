@@ -858,3 +858,6 @@ void _physics_interpolation_warning(const char *p_function, const char *p_file, 
 
 #define PHYSICS_INTERPOLATION_WARNING(m_string) \
 	_physics_interpolation_warning(FUNCTION_STR, __FILE__, __LINE__, ObjectID(UINT64_MAX), m_string)
+
+#define COLOR_PRINT(p_color, p_msg) \
+	print_line_rich(vformat("[color=%s]%s[/color]", p_color, p_msg));

@@ -379,9 +379,93 @@ layout(set = 1, binding = 5) uniform texture2D shadow_atlas;
 
 layout(set = 1, binding = 6) uniform texture2D directional_shadow_atlas;
 
-layout(set = 1, binding = 7) uniform texture2DArray lightmap_textures[MAX_LIGHTMAP_TEXTURES * 2];
+// layout(set = 1, binding = 7) uniform texture2DArray lightmap_textures[MAX_LIGHTMAP_TEXTURES * 2]; // RENDER_DRIVER_WEBGPU: doesn't support arrays
+layout(set = 1, binding = 200) uniform texture2DArray lightmap_textures0;
+layout(set = 1, binding = 201) uniform texture2DArray lightmap_textures1;
+layout(set = 1, binding = 202) uniform texture2DArray lightmap_textures2;
+layout(set = 1, binding = 203) uniform texture2DArray lightmap_textures3;
+layout(set = 1, binding = 204) uniform texture2DArray lightmap_textures4;
+layout(set = 1, binding = 205) uniform texture2DArray lightmap_textures5;
+layout(set = 1, binding = 206) uniform texture2DArray lightmap_textures6;
+layout(set = 1, binding = 207) uniform texture2DArray lightmap_textures7;
+layout(set = 1, binding = 208) uniform texture2DArray lightmap_textures8;
+layout(set = 1, binding = 209) uniform texture2DArray lightmap_textures9;
+layout(set = 1, binding = 210) uniform texture2DArray lightmap_textures10;
+layout(set = 1, binding = 211) uniform texture2DArray lightmap_textures11;
+layout(set = 1, binding = 212) uniform texture2DArray lightmap_textures12;
+layout(set = 1, binding = 213) uniform texture2DArray lightmap_textures13;
+layout(set = 1, binding = 214) uniform texture2DArray lightmap_textures14;
+layout(set = 1, binding = 215) uniform texture2DArray lightmap_textures15;
 
-layout(set = 1, binding = 8) uniform texture3D voxel_gi_textures[MAX_VOXEL_GI_INSTANCES];
+vec4 textureArray_bicubic(texture2DArray tex, vec3 uv, vec2 texture_size);
+
+vec4 lightmap_textures_bicubic(uint idx, vec3 pos, vec2 size) {
+	switch (idx) {
+		case 0: return textureArray_bicubic(lightmap_textures0, pos, size);
+		case 1: return textureArray_bicubic(lightmap_textures1, pos, size);
+		case 2: return textureArray_bicubic(lightmap_textures2, pos, size);
+		case 3: return textureArray_bicubic(lightmap_textures3, pos, size);
+		case 4: return textureArray_bicubic(lightmap_textures4, pos, size);
+		case 5: return textureArray_bicubic(lightmap_textures5, pos, size);
+		case 6: return textureArray_bicubic(lightmap_textures6, pos, size);
+		case 7: return textureArray_bicubic(lightmap_textures7, pos, size);
+		case 8: return textureArray_bicubic(lightmap_textures8, pos, size);
+		case 9: return textureArray_bicubic(lightmap_textures9, pos, size);
+		case 10: return textureArray_bicubic(lightmap_textures10, pos, size);
+		case 11: return textureArray_bicubic(lightmap_textures11, pos, size);
+		case 12: return textureArray_bicubic(lightmap_textures12, pos, size);
+		case 13: return textureArray_bicubic(lightmap_textures13, pos, size);
+		case 14: return textureArray_bicubic(lightmap_textures14, pos, size);
+		case 15: return textureArray_bicubic(lightmap_textures15, pos, size);
+	}
+	return vec4(0.0);
+}
+
+vec4 lightmap_textures_lod(uint idx, sampler s, vec3 pos, float lod) {
+	switch (idx) {
+		case 0: return textureLod(sampler2DArray(lightmap_textures0, s), pos, lod);
+		case 1: return textureLod(sampler2DArray(lightmap_textures1, s), pos, lod);
+		case 2: return textureLod(sampler2DArray(lightmap_textures2, s), pos, lod);
+		case 3: return textureLod(sampler2DArray(lightmap_textures3, s), pos, lod);
+		case 4: return textureLod(sampler2DArray(lightmap_textures4, s), pos, lod);
+		case 5: return textureLod(sampler2DArray(lightmap_textures5, s), pos, lod);
+		case 6: return textureLod(sampler2DArray(lightmap_textures6, s), pos, lod);
+		case 7: return textureLod(sampler2DArray(lightmap_textures7, s), pos, lod);
+		case 8: return textureLod(sampler2DArray(lightmap_textures8, s), pos, lod);
+		case 9: return textureLod(sampler2DArray(lightmap_textures9, s), pos, lod);
+		case 10:return textureLod(sampler2DArray(lightmap_textures10, s), pos, lod);
+		case 11:return textureLod(sampler2DArray(lightmap_textures11, s), pos, lod);
+		case 12:return textureLod(sampler2DArray(lightmap_textures12, s), pos, lod);
+		case 13:return textureLod(sampler2DArray(lightmap_textures13, s), pos, lod);
+		case 14:return textureLod(sampler2DArray(lightmap_textures14, s), pos, lod);
+		case 15:return textureLod(sampler2DArray(lightmap_textures15, s), pos, lod);
+	}
+	return vec4(0.0);
+}
+
+// layout(set = 1, binding = 8) uniform texture3D voxel_gi_textures[MAX_VOXEL_GI_INSTANCES]; // RENDER_DRIVER_WEBGPU: doesn't support arrays
+layout(set = 1, binding = 300) uniform texture3D voxel_gi_textures0;
+layout(set = 1, binding = 301) uniform texture3D voxel_gi_textures1;
+layout(set = 1, binding = 302) uniform texture3D voxel_gi_textures2;
+layout(set = 1, binding = 303) uniform texture3D voxel_gi_textures3;
+layout(set = 1, binding = 304) uniform texture3D voxel_gi_textures4;
+layout(set = 1, binding = 305) uniform texture3D voxel_gi_textures5;
+layout(set = 1, binding = 306) uniform texture3D voxel_gi_textures6;
+layout(set = 1, binding = 307) uniform texture3D voxel_gi_textures7;
+
+vec4 voxel_gi_textures_lod(uint idx, sampler s, vec3 uvw_pos, float lod_level) {
+	switch (idx) {
+		case 0: return textureLod(sampler3D(voxel_gi_textures0, s), uvw_pos, lod_level);
+		case 1: return textureLod(sampler3D(voxel_gi_textures1, s), uvw_pos, lod_level);
+		case 2: return textureLod(sampler3D(voxel_gi_textures2, s), uvw_pos, lod_level);
+		case 3: return textureLod(sampler3D(voxel_gi_textures3, s), uvw_pos, lod_level);
+		case 4: return textureLod(sampler3D(voxel_gi_textures4, s), uvw_pos, lod_level);
+		case 5: return textureLod(sampler3D(voxel_gi_textures5, s), uvw_pos, lod_level);
+		case 6: return textureLod(sampler3D(voxel_gi_textures6, s), uvw_pos, lod_level);
+		case 7: return textureLod(sampler3D(voxel_gi_textures7, s), uvw_pos, lod_level);
+	}
+	return vec4(0.0);
+}
 
 layout(set = 1, binding = 9, std430) buffer restrict readonly ClusterBuffer {
 	uint data[];

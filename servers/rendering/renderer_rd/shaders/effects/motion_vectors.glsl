@@ -45,6 +45,14 @@ float line_segment(in vec2 p, in vec2 a, in vec2 b) {
 	return length(pa - h * ba) * (params.resolution.y / 2.0f);
 }
 
+#ifdef RENDER_DRIVER_WEBGPU
+// RENDER_DRIVER_WEBGPU: TINT_UNIMPLEMENTED unhandled SPIR-V instruction: OpIsNan (val = 156)
+#define isnan is_nan
+bvec2 is_nan(vec2 v) {
+	return bvec2(v != v);
+}
+#endif // RENDER_DRIVER_WEBGPU
+
 void main() {
 	// Retrieve motion vector data.
 	float cell_size = 32.0f;

@@ -98,7 +98,29 @@ layout(set = 0, binding = 12, std140) uniform VoxelGIs {
 }
 voxel_gi_instances;
 
-layout(set = 0, binding = 13) uniform texture3D voxel_gi_textures[MAX_VOXEL_GI_INSTANCES];
+// layout(set = 0, binding = 13) uniform texture3D voxel_gi_textures[MAX_VOXEL_GI_INSTANCES]; // RENDER_DRIVER_WEBGPU: doesn't support arrays
+layout(set = 0, binding = 300) uniform texture3D voxel_gi_textures0;
+layout(set = 0, binding = 301) uniform texture3D voxel_gi_textures1;
+layout(set = 0, binding = 302) uniform texture3D voxel_gi_textures2;
+layout(set = 0, binding = 303) uniform texture3D voxel_gi_textures3;
+layout(set = 0, binding = 304) uniform texture3D voxel_gi_textures4;
+layout(set = 0, binding = 305) uniform texture3D voxel_gi_textures5;
+layout(set = 0, binding = 306) uniform texture3D voxel_gi_textures6;
+layout(set = 0, binding = 307) uniform texture3D voxel_gi_textures7;
+
+vec4 voxel_gi_textures_lod(uint idx, sampler s, vec3 uvw_pos, float lod_level) {
+	switch (idx) {
+		case 0: return textureLod(sampler3D(voxel_gi_textures0, s), uvw_pos, lod_level);
+		case 1: return textureLod(sampler3D(voxel_gi_textures1, s), uvw_pos, lod_level);
+		case 2: return textureLod(sampler3D(voxel_gi_textures2, s), uvw_pos, lod_level);
+		case 3: return textureLod(sampler3D(voxel_gi_textures3, s), uvw_pos, lod_level);
+		case 4: return textureLod(sampler3D(voxel_gi_textures4, s), uvw_pos, lod_level);
+		case 5: return textureLod(sampler3D(voxel_gi_textures5, s), uvw_pos, lod_level);
+		case 6: return textureLod(sampler3D(voxel_gi_textures6, s), uvw_pos, lod_level);
+		case 7: return textureLod(sampler3D(voxel_gi_textures7, s), uvw_pos, lod_level);
+	}
+	return vec4(0.0);
+}
 
 layout(set = 0, binding = 14) uniform sampler linear_sampler_with_mipmaps;
 
@@ -705,7 +727,7 @@ void main() {
 
 				vec4 light = vec4(0.0);
 				for (uint j = 0; j < voxel_gi_instances.data[i].mipmaps; j++) {
-					vec4 slight = textureLod(sampler3D(voxel_gi_textures[i], linear_sampler_with_mipmaps), position, float(j));
+					vec4 slight = voxel_gi_textures_lod(i, linear_sampler_with_mipmaps, position, float(j));
 					float a = (1.0 - light.a);
 					light += a * slight;
 				}

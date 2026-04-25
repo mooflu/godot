@@ -225,13 +225,24 @@ void RenderingDevice::_free_dependencies(RID p_id) {
 /**** SHADER INFRASTRUCTURE ****/
 /*******************************/
 
-Vector<uint8_t> RenderingDevice::shader_compile_spirv_from_source(ShaderStage p_stage, const String &p_source_code, ShaderLanguage p_language, String *r_error, bool p_allow_cache) {
+Vector<uint8_t> RenderingDevice::shader_compile_spirv_from_source(ShaderStage p_stage, const String &p_source_code, ShaderLanguage p_language, String *r_error, bool p_allow_cache, const String &name) {
 	switch (p_language) {
 #ifdef MODULE_GLSLANG_ENABLED
 		case ShaderLanguage::SHADER_LANGUAGE_GLSL: {
 			ShaderLanguageVersion language_version = driver->get_shader_container_format().get_shader_language_version();
 			ShaderSpirvVersion spirv_version = driver->get_shader_container_format().get_shader_spirv_version();
-			return compile_glslang_shader(p_stage, ShaderIncludeDB::parse_include_files(p_source_code), language_version, spirv_version, r_error);
+			String glsl_code = ShaderIncludeDB::parse_include_files(p_source_code);
+#ifdef DEBUG_DUMP_SHADER
+			{
+	            static int count = 1;
+				Error err;
+				Ref<FileAccess> file = FileAccess::open("/home/frank/proj/webgpu/spv-debug-out/" + name + "-" + itos(p_stage) + "-" + itos(count) + ".glsl", FileAccess::WRITE, &err);
+				file->store_string(glsl_code);
+				count++;
+			}
+#endif
+
+			return compile_glslang_shader(p_stage, glsl_code, language_version, spirv_version, r_error);
 		}
 #endif
 		default:
@@ -8302,6 +8313,8 @@ Error RenderingDevice::initialize(RenderingContextDriver *p_context, DisplayServ
 	print_verbose("Devices:");
 	int32_t device_index = Engine::get_singleton()->get_gpu_index();
 	const uint32_t device_count = context->device_get_count();
+	print_verbose("Device count:" + itos(device_count));
+
 	const bool detect_device = (device_index < 0) || (device_index >= int32_t(device_count));
 	uint32_t device_type_score = 0;
 	for (uint32_t i = 0; i < device_count; i++) {
