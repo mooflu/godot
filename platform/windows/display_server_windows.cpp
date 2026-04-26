@@ -68,6 +68,9 @@
 
 #include <dxgi1_6.h>
 #endif
+#if defined(WEBGPU_ENABLED)
+#include "rendering_context_driver_webgpu_windows.h"
+#endif
 #if defined(GLES3_ENABLED)
 #include "drivers/gles3/rasterizer_gles3.h"
 #endif
@@ -7278,6 +7281,9 @@ Error DisplayServerWindows::_create_rendering_context_window(DisplayServerEnums:
 #ifdef D3D12_ENABLED
 		RenderingContextDriverD3D12::WindowPlatformData d3d12;
 #endif
+#ifdef WEBGPU_ENABLED
+		RenderingContextDriverWebGpuWindows::WindowPlatformData webgpu;
+#endif
 	} wpd;
 #ifdef VULKAN_ENABLED
 	if (p_rendering_driver == "vulkan") {
@@ -7288,6 +7294,12 @@ Error DisplayServerWindows::_create_rendering_context_window(DisplayServerEnums:
 #ifdef D3D12_ENABLED
 	if (p_rendering_driver == "d3d12") {
 		wpd.d3d12.window = wd.hWnd;
+	}
+#endif
+#ifdef WEBGPU_ENABLED
+	if (rendering_driver == "webgpu") {
+		wpd.webgpu.window = wd.hWnd;
+		wpd.webgpu.instance = hInstance;
 	}
 #endif
 
@@ -7860,6 +7872,12 @@ DisplayServerWindows::DisplayServerWindows(const String &p_rendering_driver, Dis
 			tested_drivers.set_flag(DRIVER_ID_RD_D3D12);
 		}
 #endif
+#ifdef WEBGPU_ENABLED
+		if (tested_rendering_driver == "webgpu") {
+			rendering_context = memnew(RenderingContextDriverWebGpuWindows);
+			tested_drivers.set_flag(DRIVER_ID_RD_WEBGPU);
+		}
+#endif
 		if (rendering_context != nullptr) {
 			if (rendering_context->initialize() == OK) {
 				// The window needs to be recreated when this value differs, because it cannot be added or removed after creation.
@@ -8188,6 +8206,9 @@ Vector<String> DisplayServerWindows::get_rendering_drivers_func() {
 #ifdef VULKAN_ENABLED
 	drivers.push_back("vulkan");
 #endif
+#ifdef WEBGPU_ENABLED
+	drivers.push_back("webgpu");
+#endif
 #ifdef D3D12_ENABLED
 	drivers.push_back("d3d12");
 #endif
@@ -8215,6 +8236,10 @@ DisplayServer *DisplayServerWindows::create_func(const String &p_rendering_drive
 			if (tested_drivers.has_flag(DRIVER_ID_RD_D3D12)) {
 				drivers.push_back("Direct3D 12");
 			}
+			if (tested_drivers.has_flag(DRIVER_ID_RD_WEBGPU)) {
+				drivers.push_back("webgpu");
+			}
+
 			String executable_name = OS::get_singleton()->get_executable_path().get_file();
 			OS::get_singleton()->alert(
 					vformat("Your video card drivers seem not to support the required %s version.\n\n"

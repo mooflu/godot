@@ -900,6 +900,9 @@ def configure_mingw(env: "SConsEnvironment"):
         if not env["use_volk"]:
             env.Append(LIBS=["vulkan"])
 
+    if env["webgpu"]:
+        env.Append(CPPDEFINES=["WEBGPU_ENABLED", "RD_ENABLED"])
+
     if env["sdl"]:
         env.Append(CPPDEFINES=["SDL_ENABLED"])
 
