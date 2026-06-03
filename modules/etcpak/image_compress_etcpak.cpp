@@ -35,6 +35,9 @@
 #include "core/os/os.h"
 #include "core/string/print_string.h"
 
+#define STB_DXT_IMPLEMENTATION
+#include <thirdparty/misc/stb_dxt.h>
+
 #include <ProcessDxtc.hpp>
 #include <ProcessRGB.hpp>
 
@@ -88,6 +91,29 @@ void _compress_etc2(Image *r_img, Image::UsedChannels p_channels) {
 
 void _compress_bc(Image *r_img, Image::UsedChannels p_channels) {
 	_compress_etcpak(_determine_dxt_type(p_channels), r_img);
+}
+
+void CompressBc1_STB(const uint32_t *src, uint64_t *dst, uint32_t blocks, size_t width) {
+	uint32_t buf[4 * 4];
+	int i = 0;
+
+	for (uint32_t b = 0; b < blocks; b++) {
+		auto tmp = (uint8_t *)buf;
+		memcpy(tmp, src + width * 0, 4 * 4);
+		memcpy(tmp + 4 * 4, src + width * 1, 4 * 4);
+		memcpy(tmp + 8 * 4, src + width * 2, 4 * 4);
+		memcpy(tmp + 12 * 4, src + width * 3, 4 * 4);
+
+		src += 4;
+		if (++i == width / 4) {
+			src += width * 3;
+			i = 0;
+		}
+
+		stb_compress_dxt_block((uint8_t *)dst, tmp, 0, STB_DXT_NORMAL);
+		// stb_compress_dxt_block((uint8_t *)dst, tmp, 0, STB_DXT_HIGHQUAL);
+		dst++;
+	}
 }
 
 void _compress_etcpak(EtcpakType p_compress_type, Image *r_img) {
@@ -278,7 +304,9 @@ void _compress_etcpak(EtcpakType p_compress_type, Image *r_img) {
 				break;
 
 			case EtcpakType::ETCPAK_TYPE_DXT1:
-				CompressBc1Dither(src_mip_read, dest_mip_write, blocks, dest_mip_w);
+				// CompressBc1Dither(src_mip_read, dest_mip_write, blocks, dest_mip_w);
+				// CompressBc1(src_mip_read, dest_mip_write, blocks, dest_mip_w);
+				CompressBc1_STB(src_mip_read, dest_mip_write, blocks, dest_mip_w);
 				break;
 
 			case EtcpakType::ETCPAK_TYPE_DXT5:
